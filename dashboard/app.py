@@ -895,6 +895,51 @@ def page_runs():
 # NAVEGAÇÃO E LAYOUT PRINCIPAL
 # =============================================================================
 
+def page_settings():
+    """Gerencia destinatários de e-mail sem expor credenciais do provedor."""
+    from src.db.repositories import get_email_recipients, set_email_recipient_active, upsert_email_recipient
+
+    st.markdown('<div class="section-title">Notificações por e-mail</div>', unsafe_allow_html=True)
+    st.caption("Os destinatários salvos aqui serão usados pelos jobs do GitHub Actions.")
+
+    with st.form("add_email_recipient", clear_on_submit=True):
+        email = st.text_input("E-mail do destinatário", placeholder="nome@empresa.com")
+        label = st.text_input("Nome ou rótulo (opcional)", placeholder="Ex.: Operações")
+        submitted = st.form_submit_button("Adicionar destinatário", use_container_width=True)
+        if submitted:
+            if not email or "@" not in email:
+                st.error("Informe um endereço de e-mail válido.")
+            else:
+                try:
+                    upsert_email_recipient(email, label)
+                    st.success("Destinatário salvo.")
+                except Exception as e:
+                    st.error(f"Não foi possível salvar o destinatário: {e}")
+
+    try:
+        recipients = get_email_recipients()
+    except Exception as e:
+        st.error(f"Não foi possível carregar os destinatários: {e}")
+        return
+
+    if not recipients:
+        st.info("Nenhum destinatário configurado.")
+        return
+
+    for recipient in recipients:
+        cols = st.columns([4, 2, 1])
+        cols[0].write(recipient["email"])
+        cols[1].caption(recipient.get("label") or "Sem rótulo")
+        is_active = bool(recipient["active"])
+        action = "Desativar" if is_active else "Ativar"
+        if cols[2].button(action, key=f"recipient_{recipient['id']}"):
+            try:
+                set_email_recipient_active(recipient["id"], not is_active)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Não foi possível atualizar o destinatário: {e}")
+
+
 def _next_weekday(d: date, weekday: int) -> date:
     days_ahead = weekday - d.weekday()
     if days_ahead <= 0:
@@ -929,7 +974,7 @@ def main():
 
         page = st.radio(
             "Navegação",
-            options=["Resumo", "Carteira", "Sinais", "Ordens", "Performance", "Jobs"],
+            options=["Resumo", "Carteira", "Sinais", "Ordens", "Performance", "Jobs", "Configurações"],
             label_visibility="collapsed",
         )
 
@@ -982,6 +1027,9 @@ def main():
     elif page == "Jobs":
         st.title("Histórico de Jobs")
         page_runs()
+    elif page == "Configurações":
+        st.title("Configurações")
+        page_settings()
 
 
 if __name__ == "__main__":

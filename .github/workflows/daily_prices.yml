@@ -5,11 +5,16 @@ on:
     # Toda segunda a sexta às 22:00 UTC (19:00 BRT)
     - cron: '0 22 * * 1-5'
   workflow_dispatch:  # Permite execução manual
+    inputs:
+      initial_tickers_per_run:
+        description: 'Quantidade de tickers sem histórico para carregar (padrão: 4)'
+        required: false
+        default: '4'
 
 jobs:
   update-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -27,6 +32,7 @@ jobs:
       - name: Executar job de preços
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          INITIAL_TICKERS_PER_RUN: ${{ github.event.inputs.initial_tickers_per_run || '4' }}
         run: python -m src.jobs.daily_prices
 
       - name: Notificar falha

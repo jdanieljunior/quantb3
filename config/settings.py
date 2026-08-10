@@ -111,6 +111,9 @@ CSV_PATH = os.getenv("CSV_PATH", "cotacoes_ibrx_ohlcv_completo.csv")
 YFINANCE_RETRY_ATTEMPTS = 3
 YFINANCE_RETRY_DELAY = 5  # segundos
 YFINANCE_TIMEOUT = 15  # segundos por ativo
+# Ativos sem histórico completo por execução. Mantém a carga inicial dentro
+# do tempo do GitHub Actions; pode ser aumentado por variável de ambiente.
+YFINANCE_INITIAL_TICKERS_PER_RUN = int(os.getenv("INITIAL_TICKERS_PER_RUN", "4"))
 
 # Ativos que o Yahoo Finance retornou como indisponíveis na coleta de 2026-08-10.
 # Mantenha-os fora das consultas até que a fonte volte a fornecer cotações.

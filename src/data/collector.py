@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import List, Optional
 
 import pandas as pd
@@ -22,7 +22,7 @@ from config.settings import (
     YFINANCE_TICKER_BLACKLIST,
     YFINANCE_TIMEOUT,
 )
-from src.db.repositories import get_latest_price_date, upsert_prices
+from src.db.repositories import get_latest_price_dates, upsert_prices
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,11 @@ IBRX_TICKERS = [
     "UGPA3.SA", "USIM5.SA", "VALE3.SA", "VBBR3.SA", "VIVT3.SA",
     "WEGE3.SA", "YDUQ3.SA",
 ] + BENCHMARKS
+
+# Rebaixa uma janela recente para corrigir eventuais lacunas do Yahoo Finance.
+# Ela é maior que a maior janela de feature (63 pregões).
+REPAIR_LOOKBACK_DAYS = 100
+INITIAL_HISTORY_START = date(2022, 1, 1)
 
 
 def _download_with_retry(
@@ -140,7 +145,7 @@ def update_prices(
 
     Args:
         tickers: Lista de tickers (default: IBRX_TICKERS completo)
-        start_date: Data inicial (default: última data no banco + 1 dia)
+        start_date: Data inicial para todos os tickers (opcional)
         force_full: Se True, baixa desde 2022-01-01 independente do banco
 
     Returns:
@@ -162,29 +167,34 @@ def update_prices(
         logger.warning("Nenhum ticker disponível para atualização após aplicar a blacklist")
         return 0
 
-    if force_full:
-        start = "2022-01-01"
-    elif start_date:
-        start = start_date.strftime("%Y-%m-%d")
-    else:
-        latest = get_latest_price_date()
-        if latest:
-            next_day = latest + timedelta(days=1)
-            start = next_day.strftime("%Y-%m-%d")
-        else:
-            start = "2022-01-01"
-
     end = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
-
-    if start >= end:
-        logger.info("Preços já atualizados até hoje")
-        return 0
-
-    logger.info(f"Baixando {len(tickers)} tickers de {start} a {end}...")
+    latest_by_ticker = get_latest_price_dates(tickers)
+    missing_tickers = [ticker for ticker in tickers if ticker not in latest_by_ticker]
+    logger.info(
+        "Cobertura: %s ticker(s) com histórico, %s sem histórico",
+        len(latest_by_ticker),
+        len(missing_tickers),
+    )
     total_rows = 0
 
     for index, ticker in enumerate(tickers, start=1):
         logger.info("  Ativo %s/%s: %s", index, len(tickers), ticker)
+
+        if force_full:
+            ticker_start = INITIAL_HISTORY_START
+        elif start_date:
+            ticker_start = start_date
+        else:
+            last_date = latest_by_ticker.get(ticker)
+            # Ticker novo: carga inicial completa. Ticker existente: rebaixa
+            # os últimos 100 dias para reparar lacunas como a de 31/07/2026.
+            ticker_start = (
+                INITIAL_HISTORY_START
+                if last_date is None
+                else max(INITIAL_HISTORY_START, last_date - timedelta(days=REPAIR_LOOKBACK_DAYS))
+            )
+
+        start = ticker_start.strftime("%Y-%m-%d")
 
         raw = _download_with_retry(ticker, start, end)
         if raw is None or raw.empty:

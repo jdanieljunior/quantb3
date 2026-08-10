@@ -333,6 +333,41 @@ def get_notifications(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 # =============================================================================
+# EMAIL RECIPIENTS
+# =============================================================================
+
+def get_email_recipients(active_only: bool = False) -> List[Dict[str, Any]]:
+    """Retorna destinatários configurados no dashboard."""
+    where = "WHERE active = true" if active_only else ""
+    with get_cursor() as cur:
+        cur.execute(f"SELECT * FROM email_recipients {where} ORDER BY active DESC, email")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def upsert_email_recipient(email: str, label: Optional[str] = None) -> None:
+    """Inclui ou reativa um destinatário."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO email_recipients (email, label, active)
+            VALUES (%s, %s, true)
+            ON CONFLICT (email) DO UPDATE SET
+                label = EXCLUDED.label, active = true, updated_at = now()
+            """,
+            (email.lower().strip(), label.strip() if label else None),
+        )
+
+
+def set_email_recipient_active(recipient_id: int, active: bool) -> None:
+    """Ativa ou desativa um destinatário sem apagar histórico."""
+    with get_cursor() as cur:
+        cur.execute(
+            "UPDATE email_recipients SET active = %s, updated_at = now() WHERE id = %s",
+            (active, recipient_id),
+        )
+
+
+# =============================================================================
 # RUNS (LOG DE JOBS)
 # =============================================================================
 

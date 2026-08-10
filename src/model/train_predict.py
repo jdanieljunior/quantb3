@@ -25,7 +25,7 @@ from config.settings import (
     TRAIN_MIN_DAYS,
     N_POSITIONS,
 )
-from src.features.engineering import build_features, build_panel
+from src.features.engineering import build_features, build_panel, get_latest_features
 
 logger = logging.getLogger(__name__)
 
@@ -176,15 +176,29 @@ class QuantB3Model:
         Returns:
             (scores_series, top_tickers_com_sticky)
         """
+        # O painel de treino exige ``fwd_10`` e, por isso, não contém os
+        # últimos 10 pregões. Para a previsão da data atual, as features
+        # devem ser calculadas diretamente, sem depender do retorno futuro.
         train = self.panel[self.panel["Data"] < date]
-        test = self.panel[self.panel["Data"] == date]
-
-        if len(train) < 1000 or len(test) == 0:
+        if len(train) < 1000:
             return pd.Series(dtype=float), []
 
-        test_liq = test[test["vol_ma21"] >= self.vol_threshold]
+        test_liq = get_latest_features(
+            self.prices,
+            self.volumes,
+            self.benchmark,
+            date,
+            self.vol_threshold,
+        )
         if len(test_liq) < self.n_positions:
-            test_liq = test
+            test_liq = get_latest_features(
+                self.prices,
+                self.volumes,
+                self.benchmark,
+                date,
+            )
+        if test_liq.empty:
+            return pd.Series(dtype=float), []
 
         model = self._train_lgbm(
             train[FEATURE_NAMES].values,

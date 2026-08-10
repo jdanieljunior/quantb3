@@ -112,7 +112,7 @@ def get_latest_features(
     volumes: pd.DataFrame,
     benchmark: pd.Series,
     signal_date: pd.Timestamp,
-    vol_threshold: float,
+    vol_threshold: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Calcula as features para uma data específica (uso em produção).
@@ -122,7 +122,8 @@ def get_latest_features(
         volumes: DataFrame de volumes
         benchmark: Series BOVA11
         signal_date: Data do sinal
-        vol_threshold: Limiar de liquidez (P10 do volume médio 21d)
+        vol_threshold: Limiar de liquidez (P10 do volume médio 21d).
+            Quando ``None``, retorna todos os tickers com features válidas.
 
     Returns:
         DataFrame com features para o dia, filtrado por liquidez
@@ -152,8 +153,10 @@ def get_latest_features(
             on="ticker",
             how="left"
         )
-        # Aplica filtro de liquidez
-        feat_df = feat_df[feat_df["vol_ma21"] >= vol_threshold]
+        # Aplica filtro de liquidez apenas quando solicitado. O fallback sem
+        # filtro permite gerar um ranking mesmo em um dia de baixa cobertura.
+        if vol_threshold is not None:
+            feat_df = feat_df[feat_df["vol_ma21"] >= vol_threshold]
 
     # Remove linhas com features faltando
     feat_df = feat_df.dropna(subset=FEATURE_NAMES)

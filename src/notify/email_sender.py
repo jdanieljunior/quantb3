@@ -16,6 +16,7 @@ from config.settings import (
     EMAIL_PROVIDER,
     EMAIL_TO,
 )
+from src.db.repositories import get_email_recipients
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +43,30 @@ def send_email(
         logger.warning("E-mail não configurado (EMAIL_API_KEY ausente)")
         return False
 
-    recipient = to_email or EMAIL_TO
-    if not recipient:
+    if to_email:
+        recipients = [to_email]
+    else:
+        recipients = [row["email"] for row in get_email_recipients(active_only=True)]
+        if not recipients and EMAIL_TO:
+            recipients = [EMAIL_TO]
+
+    if not recipients:
         logger.warning("E-mail não configurado (EMAIL_TO ausente)")
         return False
 
     provider = EMAIL_PROVIDER.lower()
 
-    if provider == "brevo":
-        return _send_brevo(subject, body_text, body_html, recipient)
-    elif provider == "resend":
-        return _send_resend(subject, body_text, body_html, recipient)
-    else:
+    if provider not in {"brevo", "resend"}:
         logger.error(f"Provedor de e-mail desconhecido: {provider}")
         return False
+
+    results = []
+    for recipient in recipients:
+        if provider == "brevo":
+            results.append(_send_brevo(subject, body_text, body_html, recipient))
+        else:
+            results.append(_send_resend(subject, body_text, body_html, recipient))
+    return all(results)
 
 
 def _send_brevo(

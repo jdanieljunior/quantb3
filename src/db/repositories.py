@@ -85,6 +85,24 @@ def get_latest_price_date() -> Optional[date]:
         return row["max_date"] if row else None
 
 
+def get_latest_price_dates(tickers: List[str]) -> Dict[str, date]:
+    """Retorna a última cotação registrada para cada ticker informado."""
+    if not tickers:
+        return {}
+
+    sql = """
+        SELECT ticker, MAX(date) AS last_date
+        FROM prices
+        WHERE ticker = ANY(%(tickers)s)
+        GROUP BY ticker
+    """
+    with get_cursor() as cur:
+        cur.execute(sql, {"tickers": tickers})
+        rows = cur.fetchall()
+
+    return {row["ticker"]: row["last_date"] for row in rows if row["last_date"]}
+
+
 # =============================================================================
 # SIGNALS
 # =============================================================================

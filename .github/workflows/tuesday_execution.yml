@@ -1,0 +1,75 @@
+name: QuantB3 - Execução Terça-feira
+
+on:
+  schedule:
+    # Toda terça às 21:30 UTC (18:30 BRT)
+    - cron: '30 21 * * 2'
+  workflow_dispatch:
+    inputs:
+      exec_date:
+        description: 'Data de execução (YYYY-MM-DD, default: hoje)'
+        required: false
+        default: ''
+
+jobs:
+  execute-orders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar job de execução
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EXEC_DATE: ${{ github.event.inputs.exec_date }}
+        run: |
+          python -c "
+          import os
+          from datetime import date
+          from src.jobs.tuesday import run_tuesday_job
+
+          exec_date_str = os.environ.get('EXEC_DATE', '')
+          if exec_date_str:
+              from datetime import datetime
+              exec_date = datetime.strptime(exec_date_str, '%Y-%m-%d').date()
+          else:
+              exec_date = date.today()
+
+          result = run_tuesday_job(exec_date=exec_date)
+          print(f'Status: {result[\"status\"]}')
+          print(f'Ordens executadas: {result.get(\"n_executed\", 0)}')
+          "
+
+      - name: Notificar falha
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import os, requests
+          token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+          chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+          if token and chat_id:
+              requests.post(
+                  f'https://api.telegram.org/bot{token}/sendMessage',
+                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: Job de EXECUÇÃO (terça) FALHOU!'}
+              )
+          "

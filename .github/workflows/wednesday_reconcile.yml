@@ -1,0 +1,76 @@
+name: QuantB3 - Reconciliação Quarta-feira
+
+on:
+  schedule:
+    # Toda quarta às 15:00 UTC (12:00 BRT)
+    - cron: '0 15 * * 3'
+  workflow_dispatch:
+    inputs:
+      reconcile_date:
+        description: 'Data de reconciliação (YYYY-MM-DD, default: hoje)'
+        required: false
+        default: ''
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar job de reconciliação
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_PROVIDER: ${{ secrets.EMAIL_PROVIDER }}
+          EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          RECONCILE_DATE: ${{ github.event.inputs.reconcile_date }}
+        run: |
+          python -c "
+          import os
+          from datetime import date
+          from src.jobs.wednesday import run_wednesday_job
+
+          date_str = os.environ.get('RECONCILE_DATE', '')
+          if date_str:
+              from datetime import datetime
+              reconcile_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+          else:
+              reconcile_date = date.today()
+
+          result = run_wednesday_job(reconcile_date=reconcile_date)
+          print(f'Status: {result[\"status\"]}')
+          print(f'Posições: {result.get(\"n_positions\", 0)}')
+          print(f'Equity: R$ {result.get(\"equity\", 0):.2f}')
+          "
+
+      - name: Notificar falha
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import os, requests
+          token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+          chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+          if token and chat_id:
+              requests.post(
+                  f'https://api.telegram.org/bot{token}/sendMessage',
+                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: Job de RECONCILIAÇÃO (quarta) FALHOU!'}
+              )
+          "

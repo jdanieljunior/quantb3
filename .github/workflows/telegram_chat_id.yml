@@ -1,0 +1,27 @@
+name: Identificar chat Telegram
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-chat-id:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mostrar Chat ID da conversa iniciada
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.request import urlopen
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          with urlopen(f"https://api.telegram.org/bot{token}/getUpdates", timeout=30) as response:
+              updates = json.load(response)["result"]
+          chat_ids = sorted({str(item["message"]["chat"]["id"]) for item in updates if "message" in item})
+          if not chat_ids:
+              sys.exit("Nenhuma conversa encontrada. Envie /start ao bot e rode novamente.")
+          print("CHAT_ID=" + ",".join(chat_ids))
+          PY

@@ -6,11 +6,12 @@ Atualiza a tabela prices no Supabase com dados do universo IBRX.
 from __future__ import annotations
 
 import logging
-import multiprocessing as mp
-import os
+import subprocess
+import sys
+import tempfile
 import time
 from datetime import date, datetime, timedelta
-from queue import Empty
+from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
@@ -54,63 +55,46 @@ IBRX_TICKERS = [
 ] + BENCHMARKS
 
 
-def _download_worker(
-    result_queue: mp.Queue,
-    tickers: List[str],
-    start: str,
-    end: str,
-) -> None:
-    """Executa o download isolado para que o processo pai possa encerrá-lo."""
-    try:
-        result_queue.put(("ok", yf.download(
-            tickers,
-            start=start,
-            end=end,
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-            timeout=YFINANCE_TIMEOUT,
-        )))
-    except Exception as error:
-        result_queue.put(("error", str(error)))
-
-
 def _download_with_hard_timeout(
     tickers: List[str],
     start: str,
     end: str,
 ) -> Optional[pd.DataFrame]:
-    """Baixa um lote com limite absoluto de tempo no runner Linux."""
-    if os.name == "nt":
-        # O workflow roda em Linux. No Windows, mantém o timeout nativo do yfinance.
-        return yf.download(
-            tickers, start=start, end=end, auto_adjust=True, progress=False,
-            threads=False, timeout=YFINANCE_TIMEOUT,
-        )
+    """Baixa um lote em subprocesso com limite de tempo imposto pelo SO."""
+    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as result_file:
+        result_path = Path(result_file.name)
 
-    context = mp.get_context("fork")
-    result_queue = context.Queue()
-    process = context.Process(
-        target=_download_worker,
-        args=(result_queue, tickers, start, end),
-    )
-    process.start()
     try:
-        status, payload = result_queue.get(timeout=YFINANCE_BATCH_TIMEOUT)
-        if status == "error":
-            raise RuntimeError(payload)
-        return payload
-    except Empty:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "src.data.yfinance_worker",
+                str(result_path),
+                start,
+                end,
+                *tickers,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=YFINANCE_BATCH_TIMEOUT,
+        )
+        return pd.read_pickle(result_path)
+    except subprocess.TimeoutExpired:
         logger.warning(
             "yfinance excedeu o limite absoluto de %ss para o lote; ignorando-o",
             YFINANCE_BATCH_TIMEOUT,
         )
         return None
+    except subprocess.CalledProcessError as error:
+        logger.warning(
+            "Subprocesso yfinance falhou para o lote: %s",
+            error.stderr.strip()[-500:],
+        )
+        return None
     finally:
-        if process.is_alive():
-            process.terminate()
-        process.join(timeout=5)
-        result_queue.close()
+        result_path.unlink(missing_ok=True)
 
 
 def _download_with_retry(

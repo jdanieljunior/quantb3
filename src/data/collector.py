@@ -17,8 +17,10 @@ from config.settings import (
     BENCHMARKS,
     BOVA_TICKER,
     MIN_OBS_PCT,
+    YFINANCE_BATCH_SIZE,
     YFINANCE_RETRY_ATTEMPTS,
     YFINANCE_RETRY_DELAY,
+    YFINANCE_TIMEOUT,
 )
 from src.db.repositories import get_latest_price_date, upsert_prices
 
@@ -54,16 +56,27 @@ def _download_with_retry(
     attempts: int = YFINANCE_RETRY_ATTEMPTS,
     delay: int = YFINANCE_RETRY_DELAY,
 ) -> Optional[pd.DataFrame]:
-    """Baixa dados do yfinance com retry automático."""
+    """Baixa dados do yfinance com timeout e retry automático."""
     for attempt in range(attempts):
         try:
+            logger.info(
+                "yfinance: tentativa %s/%s para %s ativos (timeout=%ss)",
+                attempt + 1,
+                attempts,
+                len(tickers),
+                YFINANCE_TIMEOUT,
+            )
             data = yf.download(
                 tickers,
                 start=start,
                 end=end,
                 auto_adjust=True,
                 progress=False,
-                threads=True,
+                # A execução concorrente do yfinance pode ficar bloqueada quando
+                # o Yahoo responde com símbolos inválidos. Lotes menores e
+                # execução serial tornam o tempo máximo previsível.
+                threads=False,
+                timeout=YFINANCE_TIMEOUT,
             )
             if data is not None and not data.empty:
                 return data
@@ -159,8 +172,8 @@ def update_prices(
 
     logger.info(f"Baixando {len(tickers)} tickers de {start} a {end}...")
 
-    # Download em lotes para evitar timeout
-    batch_size = 50
+    # Lotes pequenos impedem que tickers indisponíveis bloqueiem todo o universo.
+    batch_size = YFINANCE_BATCH_SIZE
     total_rows = 0
 
     for i in range(0, len(tickers), batch_size):

@@ -89,6 +89,9 @@ EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "brevo")
 EMAIL_API_KEY = os.getenv("EMAIL_API_KEY", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
+EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.mail.yahoo.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
+EMAIL_SMTP_PASSWORD = os.getenv("EMAIL_SMTP_PASSWORD", "")
 
 # =============================================================================
 # AUTENTICAÇÃO DO DASHBOARD

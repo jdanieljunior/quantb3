@@ -6,12 +6,8 @@ Atualiza a tabela prices no Supabase com dados do universo IBRX.
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
-import tempfile
 import time
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
@@ -21,8 +17,6 @@ from config.settings import (
     BENCHMARKS,
     BOVA_TICKER,
     MIN_OBS_PCT,
-    YFINANCE_BATCH_TIMEOUT,
-    YFINANCE_BATCH_SIZE,
     YFINANCE_RETRY_ATTEMPTS,
     YFINANCE_RETRY_DELAY,
     YFINANCE_TICKER_BLACKLIST,
@@ -55,71 +49,37 @@ IBRX_TICKERS = [
 ] + BENCHMARKS
 
 
-def _download_with_hard_timeout(
-    tickers: List[str],
-    start: str,
-    end: str,
-) -> Optional[pd.DataFrame]:
-    """Baixa um lote em subprocesso com limite de tempo imposto pelo SO."""
-    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as result_file:
-        result_path = Path(result_file.name)
-
-    try:
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "src.data.yfinance_worker",
-                str(result_path),
-                start,
-                end,
-                *tickers,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=YFINANCE_BATCH_TIMEOUT,
-        )
-        return pd.read_pickle(result_path)
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "yfinance excedeu o limite absoluto de %ss para o lote; ignorando-o",
-            YFINANCE_BATCH_TIMEOUT,
-        )
-        return None
-    except subprocess.CalledProcessError as error:
-        logger.warning(
-            "Subprocesso yfinance falhou para o lote: %s",
-            error.stderr.strip()[-500:],
-        )
-        return None
-    finally:
-        result_path.unlink(missing_ok=True)
-
-
 def _download_with_retry(
-    tickers: List[str],
+    ticker: str,
     start: str,
     end: str,
     attempts: int = YFINANCE_RETRY_ATTEMPTS,
     delay: int = YFINANCE_RETRY_DELAY,
 ) -> Optional[pd.DataFrame]:
-    """Baixa dados do yfinance com timeout e retry automático."""
+    """Baixa um ativo por vez com timeout e retry automático."""
     for attempt in range(attempts):
         try:
             logger.info(
-                "yfinance: tentativa %s/%s para %s ativos (timeout=%ss)",
+                "yfinance: %s, tentativa %s/%s (timeout=%ss)",
+                ticker,
                 attempt + 1,
                 attempts,
-                len(tickers),
                 YFINANCE_TIMEOUT,
             )
-            data = _download_with_hard_timeout(tickers, start, end)
+            data = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+                timeout=YFINANCE_TIMEOUT,
+            )
             if data is not None and not data.empty:
                 return data
-            logger.warning(f"yfinance retornou vazio (tentativa {attempt + 1}/{attempts})")
+            logger.warning("%s: yfinance retornou vazio", ticker)
         except Exception as e:
-            logger.warning(f"Erro yfinance tentativa {attempt + 1}/{attempts}: {e}")
+            logger.warning("%s: erro yfinance: %s", ticker, e)
         if attempt < attempts - 1:
             time.sleep(delay)
 
@@ -221,21 +181,17 @@ def update_prices(
         return 0
 
     logger.info(f"Baixando {len(tickers)} tickers de {start} a {end}...")
-
-    # Lotes pequenos impedem que tickers indisponíveis bloqueiem todo o universo.
-    batch_size = YFINANCE_BATCH_SIZE
     total_rows = 0
 
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
-        logger.info(f"  Lote {i // batch_size + 1}: {len(batch)} tickers")
+    for index, ticker in enumerate(tickers, start=1):
+        logger.info("  Ativo %s/%s: %s", index, len(tickers), ticker)
 
-        raw = _download_with_retry(batch, start, end)
+        raw = _download_with_retry(ticker, start, end)
         if raw is None or raw.empty:
-            logger.warning(f"  Lote {i // batch_size + 1}: sem dados")
+            logger.warning("  %s: sem dados", ticker)
             continue
 
-        df = _parse_yfinance_data(raw, batch)
+        df = _parse_yfinance_data(raw, [ticker])
         if df.empty:
             continue
 
@@ -244,9 +200,9 @@ def update_prices(
 
         rows = upsert_prices(df)
         total_rows += rows
-        logger.info(f"  Lote {i // batch_size + 1}: {rows} registros inseridos")
+        logger.info("  %s: %s registros inseridos", ticker, rows)
 
-        time.sleep(1)  # Rate limiting
+        time.sleep(0.25)  # Rate limiting
 
     logger.info(f"Total: {total_rows} registros atualizados")
     return total_rows

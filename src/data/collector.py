@@ -6,8 +6,11 @@ Atualiza a tabela prices no Supabase com dados do universo IBRX.
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
+import os
 import time
 from datetime import date, datetime, timedelta
+from queue import Empty
 from typing import List, Optional
 
 import pandas as pd
@@ -17,9 +20,11 @@ from config.settings import (
     BENCHMARKS,
     BOVA_TICKER,
     MIN_OBS_PCT,
+    YFINANCE_BATCH_TIMEOUT,
     YFINANCE_BATCH_SIZE,
     YFINANCE_RETRY_ATTEMPTS,
     YFINANCE_RETRY_DELAY,
+    YFINANCE_TICKER_BLACKLIST,
     YFINANCE_TIMEOUT,
 )
 from src.db.repositories import get_latest_price_date, upsert_prices
@@ -49,6 +54,65 @@ IBRX_TICKERS = [
 ] + BENCHMARKS
 
 
+def _download_worker(
+    result_queue: mp.Queue,
+    tickers: List[str],
+    start: str,
+    end: str,
+) -> None:
+    """Executa o download isolado para que o processo pai possa encerrá-lo."""
+    try:
+        result_queue.put(("ok", yf.download(
+            tickers,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+            timeout=YFINANCE_TIMEOUT,
+        )))
+    except Exception as error:
+        result_queue.put(("error", str(error)))
+
+
+def _download_with_hard_timeout(
+    tickers: List[str],
+    start: str,
+    end: str,
+) -> Optional[pd.DataFrame]:
+    """Baixa um lote com limite absoluto de tempo no runner Linux."""
+    if os.name == "nt":
+        # O workflow roda em Linux. No Windows, mantém o timeout nativo do yfinance.
+        return yf.download(
+            tickers, start=start, end=end, auto_adjust=True, progress=False,
+            threads=False, timeout=YFINANCE_TIMEOUT,
+        )
+
+    context = mp.get_context("fork")
+    result_queue = context.Queue()
+    process = context.Process(
+        target=_download_worker,
+        args=(result_queue, tickers, start, end),
+    )
+    process.start()
+    try:
+        status, payload = result_queue.get(timeout=YFINANCE_BATCH_TIMEOUT)
+        if status == "error":
+            raise RuntimeError(payload)
+        return payload
+    except Empty:
+        logger.warning(
+            "yfinance excedeu o limite absoluto de %ss para o lote; ignorando-o",
+            YFINANCE_BATCH_TIMEOUT,
+        )
+        return None
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=5)
+        result_queue.close()
+
+
 def _download_with_retry(
     tickers: List[str],
     start: str,
@@ -66,25 +130,14 @@ def _download_with_retry(
                 len(tickers),
                 YFINANCE_TIMEOUT,
             )
-            data = yf.download(
-                tickers,
-                start=start,
-                end=end,
-                auto_adjust=True,
-                progress=False,
-                # A execução concorrente do yfinance pode ficar bloqueada quando
-                # o Yahoo responde com símbolos inválidos. Lotes menores e
-                # execução serial tornam o tempo máximo previsível.
-                threads=False,
-                timeout=YFINANCE_TIMEOUT,
-            )
+            data = _download_with_hard_timeout(tickers, start, end)
             if data is not None and not data.empty:
                 return data
             logger.warning(f"yfinance retornou vazio (tentativa {attempt + 1}/{attempts})")
         except Exception as e:
             logger.warning(f"Erro yfinance tentativa {attempt + 1}/{attempts}: {e}")
-            if attempt < attempts - 1:
-                time.sleep(delay)
+        if attempt < attempts - 1:
+            time.sleep(delay)
 
     return None
 
@@ -151,6 +204,19 @@ def update_prices(
     """
     if tickers is None:
         tickers = IBRX_TICKERS
+
+    ignored_tickers = sorted(set(tickers) & YFINANCE_TICKER_BLACKLIST)
+    if ignored_tickers:
+        logger.warning(
+            "Ignorando %s ticker(s) na blacklist do Yahoo Finance: %s",
+            len(ignored_tickers),
+            ", ".join(ignored_tickers),
+        )
+        tickers = [ticker for ticker in tickers if ticker not in YFINANCE_TICKER_BLACKLIST]
+
+    if not tickers:
+        logger.warning("Nenhum ticker disponível para atualização após aplicar a blacklist")
+        return 0
 
     if force_full:
         start = "2022-01-01"

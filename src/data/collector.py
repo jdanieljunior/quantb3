@@ -21,6 +21,7 @@ from config.settings import (
     YFINANCE_RETRY_DELAY,
     YFINANCE_TICKER_BLACKLIST,
     YFINANCE_TIMEOUT,
+    YFINANCE_INITIAL_TICKERS_PER_RUN,
 )
 from src.db.repositories import get_latest_price_dates, upsert_prices
 
@@ -139,6 +140,7 @@ def update_prices(
     tickers: Optional[List[str]] = None,
     start_date: Optional[date] = None,
     force_full: bool = False,
+    max_new_tickers: Optional[int] = None,
 ) -> int:
     """
     Atualiza preços no banco de dados.
@@ -147,6 +149,7 @@ def update_prices(
         tickers: Lista de tickers (default: IBRX_TICKERS completo)
         start_date: Data inicial para todos os tickers (opcional)
         force_full: Se True, baixa desde 2022-01-01 independente do banco
+        max_new_tickers: Limite de tickers sem histórico para esta execução
 
     Returns:
         Número de registros inseridos/atualizados
@@ -170,15 +173,33 @@ def update_prices(
     end = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     latest_by_ticker = get_latest_price_dates(tickers)
     missing_tickers = [ticker for ticker in tickers if ticker not in latest_by_ticker]
+    if max_new_tickers is None:
+        max_new_tickers = YFINANCE_INITIAL_TICKERS_PER_RUN
+
+    if force_full or start_date:
+        selected_tickers = tickers
+    else:
+        selected_missing = set(missing_tickers[:max_new_tickers])
+        selected_tickers = [
+            ticker for ticker in tickers
+            if ticker in latest_by_ticker or ticker in selected_missing
+        ]
+
     logger.info(
-        "Cobertura: %s ticker(s) com histórico, %s sem histórico",
+        "Cobertura: %s ticker(s) com histórico, %s sem histórico; %s selecionados nesta execução",
         len(latest_by_ticker),
         len(missing_tickers),
+        len(selected_tickers),
     )
+    if len(missing_tickers) > max_new_tickers and not (force_full or start_date):
+        logger.info(
+            "Carga inicial progressiva: %s ticker(s) pendentes para as próximas execuções",
+            len(missing_tickers) - max_new_tickers,
+        )
     total_rows = 0
 
-    for index, ticker in enumerate(tickers, start=1):
-        logger.info("  Ativo %s/%s: %s", index, len(tickers), ticker)
+    for index, ticker in enumerate(selected_tickers, start=1):
+        logger.info("  Ativo %s/%s: %s", index, len(selected_tickers), ticker)
 
         if force_full:
             ticker_start = INITIAL_HISTORY_START

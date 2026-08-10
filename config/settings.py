@@ -112,6 +112,15 @@ YFINANCE_RETRY_ATTEMPTS = 3
 YFINANCE_RETRY_DELAY = 5  # segundos
 YFINANCE_TIMEOUT = 15  # segundos por requisição; evita travar o job em ativos indisponíveis
 YFINANCE_BATCH_SIZE = 10
+YFINANCE_BATCH_TIMEOUT = 30  # limite absoluto por lote no runner Linux
+
+# Ativos que o Yahoo Finance retornou como indisponíveis na coleta de 2026-08-10.
+# Mantenha-os fora das consultas até que a fonte volte a fornecer cotações.
+YFINANCE_TICKER_BLACKLIST = frozenset({
+    "AZUL4.SA", "BRFS3.SA", "CCRO3.SA", "CIEL3.SA", "CPLE6.SA",
+    "CRFB3.SA", "ELET3.SA", "ELET6.SA", "EMBR3.SA", "GOLL4.SA",
+    "JBSS3.SA",
+})
 
 # =============================================================================
 # SIMULAÇÃO

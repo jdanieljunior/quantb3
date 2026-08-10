@@ -110,9 +110,7 @@ IS_PRODUCTION = ENV == "production"
 CSV_PATH = os.getenv("CSV_PATH", "cotacoes_ibrx_ohlcv_completo.csv")
 YFINANCE_RETRY_ATTEMPTS = 3
 YFINANCE_RETRY_DELAY = 5  # segundos
-YFINANCE_TIMEOUT = 15  # segundos por requisição; evita travar o job em ativos indisponíveis
-YFINANCE_BATCH_SIZE = 10
-YFINANCE_BATCH_TIMEOUT = 30  # limite absoluto por lote no runner Linux
+YFINANCE_TIMEOUT = 15  # segundos por ativo
 
 # Ativos que o Yahoo Finance retornou como indisponíveis na coleta de 2026-08-10.
 # Mantenha-os fora das consultas até que a fonte volte a fornecer cotações.

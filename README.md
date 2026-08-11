@@ -37,6 +37,13 @@ GitHub Actions (cron)
                     Streamlit Cloud (dashboard)
 ```
 
+## Memoriais Descritivos
+
+O memorial operacional, do modelo LightGBM, da engenharia de software e do
+simulador OHLCV está consolidado em
+[docs/MEMORIAIS_DESCRITIVOS.md](docs/MEMORIAIS_DESCRITIVOS.md). Consulte-o
+antes de alterar parâmetros, workflows ou rotinas de carga.
+
 ---
 
 ## Pré-requisitos
@@ -87,10 +94,13 @@ Em *Settings → Secrets and variables → Actions → New repository secret*, a
 | `DATABASE_URL` | Connection string do Supabase |
 | `TELEGRAM_BOT_TOKEN` | Token do bot Telegram |
 | `TELEGRAM_CHAT_ID` | ID do seu chat com o bot |
-| `EMAIL_PROVIDER` | `brevo` ou `resend` |
+| `EMAIL_PROVIDER` | `brevo`, `resend` ou `smtp` |
 | `EMAIL_API_KEY` | API key do provedor de e-mail |
 | `EMAIL_FROM` | E-mail remetente |
 | `EMAIL_TO` | Seu e-mail |
+| `EMAIL_SMTP_HOST` | Host SMTP (Yahoo: `smtp.mail.yahoo.com`) |
+| `EMAIL_SMTP_PORT` | Porta SMTP SSL (Yahoo: `465`) |
+| `EMAIL_SMTP_PASSWORD` | Senha de aplicativo SMTP |
 
 ### Passo 4 — Carga inicial dos dados históricos
 
@@ -127,6 +137,11 @@ python scripts/load_initial_data.py cotacoes_ibrx_ohlcv_completo.csv
 **Alternativa — Resend:**
 1. Crie conta em [resend.com](https://resend.com) (gratuito: 3.000 e-mails/mês)
 2. Configure `EMAIL_PROVIDER=resend` e os demais campos
+
+**Alternativa — Yahoo Mail (senha de aplicativo):**
+1. Crie uma senha de aplicativo na segurança da sua conta Yahoo.
+2. Configure `EMAIL_PROVIDER=smtp`, `EMAIL_FROM` com seu Yahoo e
+   `EMAIL_SMTP_PASSWORD` com a senha gerada.
 
 ### Passo 7 — Deploy no Streamlit Cloud
 
@@ -316,10 +331,7 @@ streamlit run dashboard/app.py
 
 ## Referências
 
-- [Memorial Descritivo — QuantB3 v1.0](QUANTB3_Memorial_Descritivo.txt)
-- [Memorial LightGBM v2.1](QUANTB3_Memorial_LightGBM_Final.txt)
-- [Memorial de Engenharia de Software](QUANTB3_Memorial_Engenharia_Software.txt)
-- [Memorial do Simulador OHLCV v2.0](QUANTB3_Memorial_Simulador_OHLCV.txt)
+- [Memoriais Descritivos consolidados](docs/MEMORIAIS_DESCRITIVOS.md)
 - [Documentação Supabase](https://supabase.com/docs)
 - [Documentação Streamlit](https://docs.streamlit.io)
 - [GitHub Actions — Scheduled Workflows](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#schedule)

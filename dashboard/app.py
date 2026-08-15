@@ -267,12 +267,12 @@ def load_latest_signals() -> list:
 
 
 @st.cache_data(ttl=300)
-def load_recent_orders(days: int = 14) -> list:
+def load_recent_orders(days: int = 14, status: Optional[str] = None) -> list:
     """Carrega ordens recentes."""
     try:
         from src.db.repositories import get_orders
         start = date.today() - timedelta(days=days)
-        return get_orders(start_date=start)
+        return get_orders(start_date=start, status=status)
     except Exception as e:
         st.warning(f"Erro ao carregar ordens: {e}")
         return []
@@ -718,10 +718,27 @@ def page_orders():
     """Página de histórico de ordens."""
     st.markdown('<div class="section-title">Histórico de Ordens</div>', unsafe_allow_html=True)
 
-    orders = load_recent_orders(days=30)
+    col_period, col_ticker, col_side, col_status = st.columns([1.1, 1.5, 1, 1.2])
+    with col_period:
+        period_label = st.selectbox("Período", ["7 dias", "30 dias", "90 dias", "Todo"], index=1)
+    with col_ticker:
+        ticker_filter = st.text_input("Ticker", placeholder="Ex.: VALE3").strip().upper()
+    with col_side:
+        side_filter = st.selectbox("Lado", ["Todos", "BUY", "SELL", "STOP", "TAKE"])
+    with col_status:
+        status_filter = st.selectbox("Status", ["Todos", "PENDING", "FILLED", "CANCELLED"])
+
+    days_map = {"7 dias": 7, "30 dias": 30, "90 dias": 90, "Todo": 36500}
+    selected_status = None if status_filter == "Todos" else status_filter
+    orders = load_recent_orders(days=days_map[period_label], status=selected_status)
+
+    if ticker_filter:
+        orders = [o for o in orders if ticker_filter in str(o.get("ticker", "")).upper()]
+    if side_filter != "Todos":
+        orders = [o for o in orders if o.get("side") == side_filter]
 
     if not orders:
-        st.info("Nenhuma ordem registrada nos últimos 30 dias.")
+        st.info("Nenhuma ordem encontrada para os filtros selecionados.")
         return
 
     rows = []
@@ -753,6 +770,7 @@ def page_orders():
         "Custo": "R$ {:.4f}",
     })
 
+    st.caption(f"{len(df)} ordem(ns) encontrada(s)")
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 

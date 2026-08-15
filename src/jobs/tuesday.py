@@ -18,6 +18,7 @@ import pandas as pd
 from config.settings import CAPITAL
 from src.data.collector import update_prices
 from src.db.repositories import (
+    cancel_order,
     fill_order,
     finish_run,
     get_equity_curve,
@@ -118,7 +119,7 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
 
         # 5. Executar ordens
         logger.info("4. Executando ordens...")
-        new_cash, new_positions, executed, notes = execute_pending_orders(
+        new_cash, new_positions, executed, notes, cancelled = execute_pending_orders(
             pending_orders=pending,
             prices_day=prices_df,
             exec_date=exec_date,
@@ -136,7 +137,13 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
                     order_filled["price"],
                     order_filled["cost"],
                     exec_date,
+                    order_filled["qty"],
                 )
+
+        for order_cancelled in cancelled:
+            order_id = order_cancelled.get("id")
+            if order_id:
+                cancel_order(order_id, order_cancelled["reason"])
 
         # 7. Calcular novo valor das posições
         prices_close = prices_df.set_index("ticker")["c"]
@@ -156,6 +163,7 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
         )
 
         log_lines.append(f"Ordens executadas: {len(executed)}")
+        log_lines.append(f"Ordens canceladas: {len(cancelled)}")
         log_lines.append(f"Equity após execução: R$ {new_equity:.2f}")
 
         # 9. Gerar notas de negociação
@@ -189,6 +197,7 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
             "status": "success",
             "exec_date": exec_date,
             "n_executed": len(executed),
+            "n_cancelled": len(cancelled),
             "new_equity": new_equity,
             "notes": trade_notes,
         }
@@ -209,3 +218,4 @@ def _prev_monday(d: date) -> date:
 if __name__ == "__main__":
     result = run_tuesday_job()
     print(result.get("notes", "Sem notas"))
+

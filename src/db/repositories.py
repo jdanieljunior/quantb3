@@ -189,13 +189,22 @@ def get_pending_orders(signal_date: Optional[date] = None) -> List[Dict[str, Any
         return [dict(r) for r in cur.fetchall()]
 
 
-def fill_order(order_id: int, price: float, cost: float, exec_date: date) -> None:
+def fill_order(order_id: int, price: float, cost: float, exec_date: date, qty: int) -> None:
     """Marca uma ordem como FILLED com preço de execução."""
     with get_cursor() as cur:
         cur.execute(
             """UPDATE orders SET status = 'FILLED', price = %s, cost = %s,
-               exec_date = %s WHERE id = %s""",
-            (price, cost, exec_date, order_id)
+               exec_date = %s, qty = %s WHERE id = %s""",
+            (price, cost, exec_date, qty, order_id)
+        )
+
+
+def cancel_order(order_id: int, reason: str) -> None:
+    """Encerra uma ordem não executada, preservando o motivo no histórico."""
+    with get_cursor() as cur:
+        cur.execute(
+            "UPDATE orders SET status = 'CANCELLED', note_id = %s WHERE id = %s",
+            (reason[:500], order_id),
         )
 
 
@@ -418,3 +427,4 @@ def get_runs(limit: int = 20) -> List[Dict[str, Any]]:
             (limit,)
         )
         return [dict(r) for r in cur.fetchall()]
+

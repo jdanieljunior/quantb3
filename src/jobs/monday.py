@@ -13,20 +13,16 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from config.settings import CAPITAL, N_POSITIONS, STOP_PCT, TAKE_RR
+from config.settings import N_POSITIONS
 from src.data.collector import update_prices
 from src.db.repositories import (
     finish_run,
-    get_current_positions,
-    get_equity_curve,
-    get_latest_price_date,
     get_prices,
-    insert_orders,
     log_notification,
+    replace_weekly_plan,
     start_run,
-    upsert_signals,
 )
-from src.model.ranking import compute_risk_levels, prepare_weekly_orders
+from src.model.ranking import prepare_weekly_orders
 from src.model.train_predict import QuantB3Model
 from src.notify.email_sender import send_signal_report
 from src.notify.telegram_sender import send_report
@@ -110,8 +106,22 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
 
         model = QuantB3Model(prices, volumes, bova)
 
-        # Carteira atual (para sticky)
-        current_positions = get_current_positions()
+        # Carteira atual derivada do razão (não de snapshots potencialmente defasados).
+        from src.db.repositories import get_orders
+        from src.execution.ledger import rebuild_portfolio_from_orders
+        cash, ledger_positions, _ = rebuild_portfolio_from_orders(
+            get_orders(status="FILLED")
+        )
+        current_positions = [
+            {
+                "ticker": ticker,
+                "qty": position["qty"],
+                "avg_price": position["avg_price"],
+                "stop_price": position.get("stop"),
+                "take_price": position.get("take"),
+            }
+            for ticker, position in ledger_positions.items()
+        ]
         prev_portfolio = [p["ticker"] for p in current_positions]
 
         # Score na data do sinal
@@ -123,22 +133,18 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         logger.info(f"   Top {N_POSITIONS}: {top_tickers}")
         log_lines.append(f"Top {N_POSITIONS}: {', '.join(top_tickers)}")
 
-        # 4. Calcular equity atual
-        equity_df = get_equity_curve()
-        if not equity_df.empty:
-            equity = float(equity_df.iloc[-1]["equity"])
-            cash = float(equity_df.iloc[-1]["cash"])
-            pos_value = float(equity_df.iloc[-1]["pos_value"])
-        else:
-            equity = CAPITAL
-            cash = CAPITAL
-            pos_value = 0.0
-
-        # 5. Preços de referência (fechamento da segunda)
+        # 4. Preços de referência (fechamento da segunda)
         if signal_ts in prices.index:
             ref_prices = prices.loc[signal_ts]
         else:
             ref_prices = prices.iloc[-1]
+
+        # 5. Equity para a alocação: caixa reconstruído + posições a mercado.
+        pos_value = sum(
+            position["qty"] * float(ref_prices.get(ticker, position["avg_price"]))
+            for ticker, position in ledger_positions.items()
+        )
+        equity = cash + pos_value
 
         # 6. Gerar ordens e sinais
         exec_date = _next_tuesday(signal_date)
@@ -154,8 +160,8 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
 
         # 7. Persistir no banco
         logger.info("4. Persistindo sinais e ordens...")
-        n_signals = upsert_signals(signals_list)
-        order_ids = insert_orders(orders)
+        order_ids = replace_weekly_plan(signal_date, signals_list, orders)
+        n_signals = len(signals_list)
         log_lines.append(f"Sinais: {n_signals} | Ordens: {len(order_ids)}")
 
         # 8. Gerar relatório

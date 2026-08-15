@@ -381,6 +381,18 @@ def page_home():
         pos_value = last["pos_value"]
         n_pos = last.get("n_positions", len(positions))
 
+        # Atualiza o valor do patrimônio com cotações correntes. O snapshot
+        # histórico continua sendo usado apenas para a curva de equity.
+        if positions:
+            current_prices = load_current_prices([p["ticker"] for p in positions])
+            live_pos_value = sum(
+                p["qty"] * current_prices.get(p["ticker"], p.get("avg_price", 0))
+                for p in positions
+            )
+            if live_pos_value > 0:
+                pos_value = live_pos_value
+                equity = cash + pos_value
+
         # Variação desde início
         first_equity = equity_df.iloc[0]["equity"]
         total_ret = (equity / first_equity - 1) * 100
@@ -795,7 +807,7 @@ def page_equity():
 
     days = (equity_df.iloc[-1]["date"] - equity_df.iloc[0]["date"]).days
     years = max(days / 365.25, 0.01)
-    cagr = ((last / first) ** (1 / years) - 1) * 100
+    cagr = ((last / first) ** (1 / years) - 1) * 100 if days >= 30 else None
 
     ret_series = equity_df["ret"].dropna()
     vol = ret_series.std() * (252 ** 0.5) * 100
@@ -806,11 +818,11 @@ def page_equity():
     with col1:
         render_metric_card("Retorno Total", format_pct(total_ret), delta=None, delta_positive=total_ret >= 0)
     with col2:
-        render_metric_card("CAGR", format_pct(cagr))
+        render_metric_card("CAGR", format_pct(cagr) if cagr is not None else "—")
     with col3:
         render_metric_card("Sharpe", f"{sharpe:.2f}")
     with col4:
-        render_metric_card("Max Drawdown", format_pct(max_dd), delta_positive=False)
+        render_metric_card("Max Drawdown", f"{max_dd:.2f}%", delta_positive=False)
 
     st.markdown("---")
 

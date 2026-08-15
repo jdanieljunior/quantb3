@@ -12,18 +12,15 @@ import sys
 from datetime import date, timedelta
 from typing import Dict, List
 
-import pandas as pd
-
-from config.settings import CAPITAL, SIMULATION_LABEL
+from config.settings import SIMULATION_LABEL
 from src.db.repositories import (
     finish_run,
-    get_equity_curve,
     get_orders,
     get_prices,
     log_notification,
     start_run,
     upsert_equity,
-    upsert_positions,
+    replace_positions_snapshot,
 )
 from src.notify.email_sender import send_reconcile_summary
 from src.notify.telegram_sender import send_message
@@ -75,7 +72,7 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
 
         # 2. Reconstruir posições a partir das ordens
         logger.info("2. Reconstruindo posições...")
-        positions = _rebuild_positions_from_orders(filled_orders)
+        cash, positions, _ = _rebuild_portfolio_from_ledger()
 
         # 3. Carregar preços atuais para valorização
         logger.info("3. Carregando preços para valorização...")
@@ -95,13 +92,7 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
         if not prices_df.empty:
             prices_close = prices_df.set_index("ticker")["c"].to_dict()
 
-        # 4. Calcular equity
-        equity_df = get_equity_curve()
-        if not equity_df.empty:
-            cash = float(equity_df.iloc[-1]["cash"])
-        else:
-            cash = CAPITAL
-
+        # 4. Calcular equity usando o caixa reconstruído do razão
         pos_value = sum(
             pos["qty"] * float(prices_close.get(ticker, pos["avg_price"]))
             for ticker, pos in positions.items()
@@ -122,7 +113,7 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
             if pos["qty"] > 0
         ]
 
-        n_pos = upsert_positions(positions_list, reconcile_date)
+        n_pos = replace_positions_snapshot(positions_list, reconcile_date)
         log_lines.append(f"Posições persistidas: {n_pos}")
 
         # 6. Atualizar equity oficial
@@ -186,46 +177,16 @@ def _rebuild_positions_from_orders(
     Reconstrói posições a partir do histórico de ordens FILLED.
     Considera todas as ordens desde o início da simulação.
     """
-    from src.db.repositories import get_orders as _get_all_orders
-    all_orders = _get_all_orders(status="FILLED")
-
-    positions: Dict[str, Dict] = {}
-
-    # Ordena por data de execução
-    all_orders_sorted = sorted(all_orders, key=lambda x: (x.get("exec_date") or date.min, x.get("id") or 0))
-
-    for order in all_orders_sorted:
-        ticker = order["ticker"]
-        side = order["side"]
-        qty = order["qty"]
-        price = order.get("price") or 0
-
-        if side == "BUY":
-            if ticker in positions:
-                old = positions[ticker]
-                total_qty = old["qty"] + qty
-                avg_price = (old["qty"] * old["avg_price"] + qty * price) / total_qty if total_qty > 0 else price
-                positions[ticker] = {**old, "qty": total_qty, "avg_price": avg_price}
-            else:
-                from config.settings import STOP_PCT, TAKE_RR, SLIPPAGE_STOP, SLIPPAGE_TAKE
-                stop_p = price * (1 + STOP_PCT) * (1 - SLIPPAGE_STOP)
-                risk = price - stop_p
-                take_p = (price + risk * TAKE_RR) * (1 - SLIPPAGE_TAKE)
-                positions[ticker] = {
-                    "qty": qty,
-                    "avg_price": price,
-                    "stop": stop_p,
-                    "take": take_p,
-                }
-        elif side in ("SELL", "STOP", "TAKE"):
-            if ticker in positions:
-                new_qty = positions[ticker]["qty"] - qty
-                if new_qty <= 0:
-                    del positions[ticker]
-                else:
-                    positions[ticker]["qty"] = new_qty
-
+    from src.execution.ledger import rebuild_portfolio_from_orders
+    _, positions, _ = rebuild_portfolio_from_orders(filled_orders)
     return positions
+
+
+def _rebuild_portfolio_from_ledger() -> tuple[float, Dict[str, Dict], List[str]]:
+    """Retorna o estado oficial, derivado de todo o histórico FILLED."""
+    from src.db.repositories import get_orders as _get_all_orders
+    from src.execution.ledger import rebuild_portfolio_from_orders
+    return rebuild_portfolio_from_orders(_get_all_orders(status="FILLED"))
 
 
 def _generate_reconcile_summary(

@@ -199,22 +199,5 @@ def prepare_weekly_orders(
                 "note_id": None,
             })
 
-    # Vendas de tickers fora do top (saída total)
-    for ticker in sells:
-        if ticker not in top_tickers:
-            price = prices.get(ticker, np.nan)
-            qty = current.get(ticker, 0)
-            if qty > 0 and not pd.isna(price):
-                orders.append({
-                    "signal_date": signal_date,
-                    "exec_date": exec_date,
-                    "ticker": ticker,
-                    "side": "SELL",
-                    "qty": qty,
-                    "price": None,
-                    "cost": None,
-                    "status": "PENDING",
-                    "note_id": None,
-                })
-
     return orders, signals_list
+

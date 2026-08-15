@@ -350,7 +350,9 @@ def render_action_badge(action: str) -> str:
 
 def format_currency(value: float) -> str:
     """Formata valor como moeda brasileira."""
-    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    prefix = "-R$ " if value < 0 else "R$ "
+    formatted = f"{abs(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{prefix}{formatted}"
 
 
 def format_pct(value: float) -> str:
@@ -1064,4 +1066,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

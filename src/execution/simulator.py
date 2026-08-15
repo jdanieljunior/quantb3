@@ -117,7 +117,7 @@ def execute_pending_orders(
     cash: float,
     positions: Dict[str, Dict],
     seed: Optional[int] = None,
-) -> Tuple[float, Dict[str, Dict], List[Dict], List[str]]:
+) -> Tuple[float, Dict[str, Dict], List[Dict], List[str], List[Dict]]:
     """
     Executa todas as ordens pendentes para um dia.
 
@@ -130,10 +130,11 @@ def execute_pending_orders(
         seed: Semente aleatória
 
     Returns:
-        (novo_cash, novas_posicoes, ordens_executadas, notas_negociacao)
+        (novo_cash, novas_posicoes, ordens_executadas, notas_negociacao, ordens_canceladas)
     """
     executed = []
     notes = []
+    skipped = []
     rng = np.random.default_rng(seed)
 
     # Primeiro processa vendas (libera caixa)
@@ -146,11 +147,13 @@ def execute_pending_orders(
 
         if ticker not in positions:
             logger.warning(f"Tentativa de vender {ticker} sem posição")
+            skipped.append({**order, "reason": "Sem posição aberta para venda"})
             continue
 
         row = prices_day[prices_day["ticker"] == ticker]
         if row.empty:
             logger.warning(f"Sem dados OHLCV para {ticker} em {exec_date}")
+            skipped.append({**order, "reason": f"Sem cotação para {exec_date}"})
             continue
 
         ohlc = row.iloc[0].to_dict()
@@ -181,6 +184,7 @@ def execute_pending_orders(
         row = prices_day[prices_day["ticker"] == ticker]
         if row.empty:
             logger.warning(f"Sem dados OHLCV para {ticker} em {exec_date}")
+            skipped.append({**order, "reason": f"Sem cotação para {exec_date}"})
             continue
 
         ohlc = row.iloc[0].to_dict()
@@ -193,6 +197,7 @@ def execute_pending_orders(
             qty = int((cash * 0.99) / (exec_price * (1 + COST_PCT)))
             if qty <= 0:
                 logger.warning(f"Caixa insuficiente para {ticker}")
+                skipped.append({**order, "reason": "Caixa insuficiente para compra"})
                 continue
             total_cost = qty * exec_price + cost_val
             order = {**order, "qty": qty}
@@ -232,7 +237,7 @@ def execute_pending_orders(
 
         logger.info(f"COMPRA: {note}")
 
-    return cash, positions, executed, notes
+    return cash, positions, executed, notes, skipped
 
 
 def check_stops_takes(
@@ -307,3 +312,4 @@ def check_stops_takes(
         del positions[ticker]
 
     return cash, positions, triggered
+

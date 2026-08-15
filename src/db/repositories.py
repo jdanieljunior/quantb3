@@ -175,6 +175,100 @@ def insert_orders(orders: List[Dict[str, Any]]) -> List[int]:
     return ids
 
 
+def replace_pending_orders_for_signal_date(
+    signal_date: date, orders: List[Dict[str, Any]]
+) -> List[int]:
+    """Substitui somente ordens ainda pendentes de uma geração de sinais.
+
+    Ordens executadas ou canceladas são histórico imutável e nunca são tocadas.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            "DELETE FROM orders WHERE signal_date = %s AND status = 'PENDING'",
+            (signal_date,),
+        )
+        if not orders:
+            return []
+
+        sql = """
+            INSERT INTO orders (signal_date, exec_date, ticker, side, qty,
+                                price, cost, status, note_id)
+            VALUES (%(signal_date)s, %(exec_date)s, %(ticker)s, %(side)s, %(qty)s,
+                    %(price)s, %(cost)s, %(status)s, %(note_id)s)
+            RETURNING id
+        """
+        ids = []
+        for order in orders:
+            cur.execute(sql, order)
+            row = cur.fetchone()
+            if row:
+                ids.append(row["id"])
+        return ids
+
+
+def has_filled_orders_for_signal_date(signal_date: date) -> bool:
+    """Indica se a geração já virou execução e, portanto, não pode ser refeita."""
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS(SELECT 1 FROM orders WHERE signal_date = %s AND status = 'FILLED') AS exists",
+            (signal_date,),
+        )
+        row = cur.fetchone()
+        return bool(row and row["exists"])
+
+
+def replace_weekly_plan(
+    signal_date: date, signals: List[Dict[str, Any]], orders: List[Dict[str, Any]]
+) -> List[int]:
+    """Grava sinais e ordens pendentes como uma única operação atômica.
+
+    Uma execução repetida antes da terça substitui o plano inteiro; depois de
+    qualquer execução FILLED ela falha para manter o histórico coerente.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS(SELECT 1 FROM orders WHERE signal_date = %s AND status = 'FILLED') AS exists",
+            (signal_date,),
+        )
+        if cur.fetchone()["exists"]:
+            raise ValueError(
+                f"Sinais de {signal_date} já possuem ordens executadas; geração bloqueada."
+            )
+
+        cur.execute("DELETE FROM signals WHERE signal_date = %s", (signal_date,))
+        cur.execute(
+            "DELETE FROM orders WHERE signal_date = %s AND status = 'PENDING'",
+            (signal_date,),
+        )
+
+        if signals:
+            cur.executemany(
+                """
+                INSERT INTO signals (signal_date, ticker, score, rank, action,
+                                     target_qty, ref_price, stop_price, take_price)
+                VALUES (%(signal_date)s, %(ticker)s, %(score)s, %(rank)s, %(action)s,
+                        %(target_qty)s, %(ref_price)s, %(stop_price)s, %(take_price)s)
+                """,
+                signals,
+            )
+
+        order_ids = []
+        if orders:
+            order_sql = """
+                INSERT INTO orders (signal_date, exec_date, ticker, side, qty,
+                                    price, cost, status, note_id)
+                VALUES (%(signal_date)s, %(exec_date)s, %(ticker)s, %(side)s, %(qty)s,
+                        %(price)s, %(cost)s, %(status)s, %(note_id)s)
+                RETURNING id
+            """
+            for order in orders:
+                cur.execute(order_sql, order)
+                row = cur.fetchone()
+                if row:
+                    order_ids.append(row["id"])
+        return order_ids
+
+
 def get_pending_orders(signal_date: Optional[date] = None) -> List[Dict[str, Any]]:
     """Retorna ordens com status PENDING."""
     if signal_date:
@@ -259,6 +353,33 @@ def upsert_positions(positions: List[Dict[str, Any]], as_of: date) -> int:
 
     with get_cursor() as cur:
         cur.executemany(sql, positions)
+        return len(positions)
+
+
+def replace_positions_snapshot(positions: List[Dict[str, Any]], as_of: date) -> int:
+    """Substitui integralmente a fotografia de posições de uma data.
+
+    Isso evita que um ticker encerrado sobreviva por engano em um snapshot novo.
+    O marcador de quantidade zero mantém a data do snapshot mesmo sem posições.
+    """
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM positions WHERE as_of = %s", (as_of,))
+        rows = [
+            {**pos, "as_of": as_of}
+            for pos in positions
+            if int(pos.get("qty") or 0) > 0
+        ]
+        if not rows:
+            rows = [{
+                "as_of": as_of, "ticker": "__CASH__", "qty": 0,
+                "avg_price": 0.0, "stop_price": None, "take_price": None,
+            }]
+
+        sql = """
+            INSERT INTO positions (as_of, ticker, qty, avg_price, stop_price, take_price)
+            VALUES (%(as_of)s, %(ticker)s, %(qty)s, %(avg_price)s, %(stop_price)s, %(take_price)s)
+        """
+        cur.executemany(sql, rows)
         return len(positions)
 
 
@@ -427,4 +548,3 @@ def get_runs(limit: int = 20) -> List[Dict[str, Any]]:
             (limit,)
         )
         return [dict(r) for r in cur.fetchall()]
-

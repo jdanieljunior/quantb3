@@ -561,7 +561,7 @@ def page_portfolio():
             return f"color: {color}"
         return ""
 
-    styled = df.style.applymap(color_pl, subset=["P&L (R$)", "P&L (%)"]).format({
+    styled = df.style.map(color_pl, subset=["P&L (R$)", "P&L (%)"]).format({
         "P. Médio": "R$ {:.2f}",
         "P. Atual": "R$ {:.2f}",
         "Valor": "R$ {:.2f}",
@@ -671,7 +671,7 @@ def page_signals():
         }
         return colors.get(val, "")
 
-    styled = df.style.applymap(color_action, subset=["Ação"]).format({
+    styled = df.style.map(color_action, subset=["Ação"]).format({
         "Score": "{:.4f}",
         "Ref (R$)": "R$ {:.2f}",
         "Stop (R$)": "R$ {:.2f}",
@@ -748,7 +748,7 @@ def page_orders():
         }
         return colors.get(val, "")
 
-    styled = df.style.applymap(color_side, subset=["Lado", "Status"]).format({
+    styled = df.style.map(color_side, subset=["Lado", "Status"]).format({
         "Preço": "R$ {:.2f}",
         "Custo": "R$ {:.4f}",
     })
@@ -887,7 +887,7 @@ def page_runs():
         }
         return colors.get(val, "")
 
-    styled = df.style.applymap(color_status, subset=["Status"])
+    styled = df.style.map(color_status, subset=["Status"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
@@ -1034,3 +1034,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

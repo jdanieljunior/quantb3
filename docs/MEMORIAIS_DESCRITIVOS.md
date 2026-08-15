@@ -1,7 +1,7 @@
 # Memoriais Descritivos — QuantB3
 
-**Versão documental:** 1.1  
-**Atualizado em:** 10/08/2026  
+**Versão documental:** 1.2  
+**Atualizado em:** 15/08/2026  
 **Escopo:** operação simulada (paper trading), sem capital real.
 
 Este documento consolida os memoriais operacional, do modelo, de engenharia e do simulador. Deve ser atualizado quando houver mudanças em modelo, coleta, workflows ou regras de execução.
@@ -17,7 +17,7 @@ O QuantB3 acompanha o universo IBRX da B3 e gera uma carteira semanal simulada. 
 | Execução simulada | `tuesday_execution` | Terça, 21:30 | Preenchimento simulado das ordens |
 | Reconciliação | `wednesday_reconcile` | Quarta, 15:00 | Equity e resumo operacional |
 
-Os workflows aceitam disparo manual. O job de segunda-feira pode criar registros em `signals` e ordens `PENDING`; portanto, não deve ser repetido indiscriminadamente.
+Os workflows aceitam disparo manual. Antes da execução de uma ordem, uma nova execução de segunda-feira substitui atomicamente os sinais e as ordens `PENDING` da mesma data. Após existir ordem `FILLED`, a geração para aquela data é bloqueada, preservando o vínculo entre sinais e execução.
 
 ### Notificações
 
@@ -61,9 +61,24 @@ GitHub Actions → jobs Python → Supabase/PostgreSQL → Streamlit Cloud
 
 As principais tabelas são `prices`, `signals`, `orders`, `positions`, `equity`, `notifications` e `runs`. A tabela `prices` usa upsert por `(date, ticker)`; por isso, a rebaixada de 100 dias corrige dados sem criar duplicidade.
 
+### Integridade de carteira e reconciliação
+
+O livro de ordens com status `FILLED` é a fonte de verdade para caixa e posições. O módulo `src/execution/ledger.py` percorre as ordens em ordem de execução e:
+
+1. debita compra pelo valor financeiro mais custos;
+2. credita venda, stop ou take pelo valor líquido de custos;
+3. recompõe quantidade, preço médio, stop e take de cada posição;
+4. interrompe a reconciliação se identificar preço inválido, venda sem posição suficiente ou caixa negativo.
+
+Os snapshots em `positions` e `equity` são projeções do razão, não insumos para uma nova execução. A reconciliação substitui integralmente as posições da data, eliminando ativos encerrados que poderiam permanecer em snapshots anteriores. O patrimônio obedece sempre à identidade `equity = cash + pos_value`.
+
+Na tela de carteira, **P&L Não Realizado** mede apenas a variação de mercado das posições abertas. O retorno total da página de performance inclui também os custos operacionais e é calculado contra o capital inicial da simulação. CAGR não é exibido para séries inferiores a 30 dias.
+
 Cada job registra execução na tabela `runs` e produz logs no GitHub Actions. O timeout por ticker limita bloqueios individuais do yfinance; o coletor continua com os demais ativos quando uma consulta falha.
 
-Segredos são mantidos em GitHub Secrets e Streamlit Secrets. O acesso Excel, quando habilitado, usa credencial PostgreSQL dedicada e somente leitura. A aplicação é destinada exclusivamente a simulação.
+Segredos são mantidos em GitHub Secrets e Streamlit Secrets. Integrações externas de análise, como Power BI e Excel, usam uma role PostgreSQL dedicada, com `LOGIN`, `CONNECT`, `USAGE` no schema `public` e somente `SELECT` nas tabelas atuais e futuras. Essa role não recebe permissões de inserção, alteração, exclusão, DDL ou privilégios administrativos. Para redes IPv4, a conexão deve usar o **Session Pooler** do Supabase na porta 5432, com TLS.
+
+A aplicação é destinada exclusivamente a simulação.
 
 ## 4. Memorial do Simulador OHLCV
 
@@ -82,6 +97,7 @@ O simulador não envia ordens a corretoras e não movimenta recursos. Os resulta
 
 1. Confirme que `daily_prices` terminou com sucesso.
 2. Confirme a cobertura histórica e a ausência de lacunas recentes.
-3. Verifique se já existem ordens pendentes para a mesma data de sinal.
+3. Verifique se já existem ordens `FILLED` para a mesma data de sinal; nesse caso, não reexecute `monday_signals`.
 4. Confirme que Telegram e e-mail estão configurados.
-5. Dispare `monday_signals` somente uma vez para aquela data, salvo reprocessamento consciente.
+5. Dispare `monday_signals` somente uma vez para aquela data. Antes da terça-feira, reprocessamentos substituem somente o plano pendente; depois da execução, são bloqueados.
+6. Após `tuesday_execution`, execute `wednesday_reconcile` e confirme a igualdade entre patrimônio, caixa e posições.

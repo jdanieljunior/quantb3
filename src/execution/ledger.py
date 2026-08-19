@@ -26,7 +26,19 @@ def rebuild_portfolio_from_orders(
     warnings: List[str] = []
 
     filled = [o for o in orders if o.get("status") == "FILLED"]
-    filled.sort(key=lambda o: (o.get("exec_date") or date.min, o.get("id") or 0))
+
+    # O simulador executa vendas antes de compras para liberar caixa no mesmo
+    # pregão. A reconstrução do razão deve obedecer à mesma regra; ordenar
+    # apenas por ``id`` poderia debitar uma compra antes do crédito de uma
+    # venda planejada para a mesma data.
+    side_priority = {"SELL": 0, "STOP": 0, "TAKE": 0, "BUY": 1}
+    filled.sort(
+        key=lambda o: (
+            o.get("exec_date") or date.min,
+            side_priority.get(str(o.get("side") or "").upper(), 2),
+            o.get("id") or 0,
+        )
+    )
 
     for order in filled:
         ticker = str(order.get("ticker") or "").strip()

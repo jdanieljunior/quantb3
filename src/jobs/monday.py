@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -35,6 +36,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _brazil_today() -> date:
+    """Data operacional no horário de Brasília, independente do runner UTC."""
+    return datetime.now(BRAZIL_TZ).date()
+
 
 def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
     """
@@ -48,7 +56,7 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         Dict com resultado do job
     """
     if signal_date is None:
-        signal_date = date.today()
+        signal_date = _brazil_today()
 
     run_id = start_run("monday")
     log_lines = []
@@ -103,6 +111,14 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         # 3. Treinar modelo e gerar scores
         logger.info("3. Treinando modelo LGBM...")
         signal_ts = pd.Timestamp(signal_date)
+
+        if signal_ts not in prices.index:
+            last_price_date = prices.index.max().date()
+            raise ValueError(
+                "Não há preços de fechamento para a data operacional "
+                f"{signal_date}; último pregão disponível: {last_price_date}. "
+                "Execute o job após o fechamento ou informe uma data de pregão."
+            )
 
         model = QuantB3Model(prices, volumes, bova)
 

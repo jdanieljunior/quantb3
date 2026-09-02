@@ -38,22 +38,19 @@ jobs:
           EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
-          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
-          EMAIL_SMTP_PASSWORD: ${{ secrets.EMAIL_SMTP_PASSWORD }}
           SIGNAL_DATE: ${{ github.event.inputs.signal_date }}
         run: |
           python -c "
           import os
-          from datetime import date
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
           from src.jobs.monday import run_monday_job
 
           signal_date_str = os.environ.get('SIGNAL_DATE', '')
           if signal_date_str:
-              from datetime import datetime
               signal_date = datetime.strptime(signal_date_str, '%Y-%m-%d').date()
           else:
-              signal_date = date.today()
+              signal_date = datetime.now(ZoneInfo('America/Sao_Paulo')).date()
 
           result = run_monday_job(signal_date=signal_date)
           print(f'Status: {result[\"status\"]}')

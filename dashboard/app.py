@@ -842,10 +842,12 @@ def _trade_markers(orders: list, ticker: str) -> pd.DataFrame:
                 "price": price,
                 "cost": cost,
                 "pnl": None,
+                "pnl_pct": None,
             })
         elif side in {"SELL", "STOP", "TAKE"}:
             sold_qty = min(qty, qty_held)
             pnl = qty * price - cost - sold_qty * avg_cost if sold_qty else None
+            pnl_pct = (pnl / (sold_qty * avg_cost) * 100) if pnl is not None and avg_cost else None
             qty_held = max(qty_held - sold_qty, 0)
             if qty_held == 0:
                 avg_cost = 0.0
@@ -856,6 +858,7 @@ def _trade_markers(orders: list, ticker: str) -> pd.DataFrame:
                 "price": price,
                 "cost": cost,
                 "pnl": pnl,
+                "pnl_pct": pnl_pct,
             })
 
     return pd.DataFrame(markers)
@@ -907,22 +910,23 @@ def page_asset_history():
         if data.empty:
             return
         pnl_text = data["pnl"].apply(lambda value: "—" if pd.isna(value) else format_currency(float(value)))
+        pnl_pct_text = data["pnl_pct"].apply(lambda value: "—" if pd.isna(value) else format_pct(float(value)))
         fig.add_trace(go.Scatter(
             x=data["date"],
             y=data["close"],
             mode="markers",
             name=name,
             marker=dict(symbol=symbol, color=color, size=13, line=dict(color="#e2e8f0", width=1)),
-            customdata=list(zip(data["qty"], data["price"], data["cost"], pnl_text)),
+            customdata=list(zip(data["qty"], data["price"], data["cost"], pnl_text, pnl_pct_text)),
             hovertemplate=(
                 "%{x|%d/%m/%Y}<br>Qtd: %{customdata[0]}<br>Preço executado: R$ %{customdata[1]:.2f}"
-                "<br>Custo: R$ %{customdata[2]:.2f}<br>Resultado: %{customdata[3]}<extra>" + name + "</extra>"
+                "<br>Custo: R$ %{customdata[2]:.2f}<br>Resultado: %{customdata[3]} (%{customdata[4]})<extra>" + name + "</extra>"
             ),
         ))
 
-    add_trade_trace(buys, "Compra", "circle", "#3b82f6")
+    add_trade_trace(buys, "Compra", "circle", "#facc15")
     add_trade_trace(profitable_sales, "Venda com lucro", "triangle-up", "#22c55e")
-    add_trade_trace(losing_sales, "Venda com prejuízo", "triangle-down", "#22c55e")
+    add_trade_trace(losing_sales, "Venda com prejuízo", "triangle-down", "#ef4444")
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
@@ -935,7 +939,7 @@ def page_asset_history():
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("● Compra  •  ▲ Venda com lucro  •  ▼ Venda com prejuízo. O resultado da venda usa o preço médio imediatamente anterior à operação.")
+    st.caption("● Compra  •  ▲ Venda com lucro  •  ▼ Venda com prejuízo. O resultado e o percentual usam o preço médio imediatamente anterior à venda.")
 
 
 def page_equity():

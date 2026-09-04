@@ -279,6 +279,28 @@ def load_recent_orders(days: int = 14, status: Optional[str] = None) -> list:
 
 
 @st.cache_data(ttl=300)
+def load_filled_orders() -> list:
+    """Carrega todo o histórico de ordens efetivamente executadas."""
+    try:
+        from src.db.repositories import get_orders
+        return get_orders(status="FILLED")
+    except Exception as e:
+        st.warning(f"Erro ao carregar operações executadas: {e}")
+        return []
+
+
+@st.cache_data(ttl=300)
+def load_ticker_prices(ticker: str) -> pd.DataFrame:
+    """Carrega a série de fechamentos de um único ativo."""
+    try:
+        from src.db.repositories import get_prices
+        return get_prices(tickers=[ticker])
+    except Exception as e:
+        st.warning(f"Erro ao carregar preços de {ticker}: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
 def load_recent_runs(limit: int = 20) -> list:
     """Carrega histórico de jobs."""
     try:
@@ -788,6 +810,134 @@ def page_orders():
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
+def _trade_markers(orders: list, ticker: str) -> pd.DataFrame:
+    """Calcula marcadores de compra e resultado realizado de cada venda."""
+    history = [
+        order for order in orders
+        if order.get("ticker") == ticker and order.get("exec_date") and order.get("price") is not None
+    ]
+    history.sort(key=lambda order: (pd.Timestamp(order["exec_date"]), order.get("id") or 0))
+
+    qty_held = 0
+    avg_cost = 0.0
+    markers = []
+
+    for order in history:
+        side = str(order.get("side") or "").upper()
+        qty = int(order.get("qty") or 0)
+        price = float(order.get("price") or 0)
+        cost = float(order.get("cost") or 0)
+        if qty <= 0 or price <= 0:
+            continue
+
+        trade_date = pd.Timestamp(order["exec_date"])
+        if side == "BUY":
+            total_cost = qty_held * avg_cost + qty * price + cost
+            qty_held += qty
+            avg_cost = total_cost / qty_held
+            markers.append({
+                "date": trade_date,
+                "kind": "Compra",
+                "qty": qty,
+                "price": price,
+                "cost": cost,
+                "pnl": None,
+            })
+        elif side in {"SELL", "STOP", "TAKE"}:
+            sold_qty = min(qty, qty_held)
+            pnl = qty * price - cost - sold_qty * avg_cost if sold_qty else None
+            qty_held = max(qty_held - sold_qty, 0)
+            if qty_held == 0:
+                avg_cost = 0.0
+            markers.append({
+                "date": trade_date,
+                "kind": "Venda com lucro" if pnl is not None and pnl >= 0 else "Venda com prejuízo",
+                "qty": qty,
+                "price": price,
+                "cost": cost,
+                "pnl": pnl,
+            })
+
+    return pd.DataFrame(markers)
+
+
+def page_asset_history():
+    """Exibe fechamento diário e negociações de um ativo já operado."""
+    st.markdown('<div class="section-title">Histórico por Ativo</div>', unsafe_allow_html=True)
+    filled_orders = load_filled_orders()
+    current_positions = load_current_positions()
+    tickers = sorted({
+        str(order.get("ticker")) for order in filled_orders if order.get("ticker")
+    } | {
+        str(position.get("ticker")) for position in current_positions if position.get("ticker")
+    })
+
+    if not tickers:
+        st.info("Nenhum ativo comprado, vendido ou presente na carteira foi encontrado.")
+        return
+
+    ticker = st.selectbox("Ativo", tickers, help="A lista contém apenas ativos operados ou ainda presentes na carteira.")
+    prices = load_ticker_prices(ticker)
+    if prices.empty:
+        st.warning(f"Não há histórico de preços para {ticker}.")
+        return
+
+    prices = prices.sort_values("date").dropna(subset=["c"])
+    markers = _trade_markers(filled_orders, ticker)
+    close_by_date = prices.set_index("date")["c"]
+    if not markers.empty:
+        markers["close"] = markers["date"].map(close_by_date)
+        markers = markers.dropna(subset=["close"])
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=prices["date"],
+        y=prices["c"],
+        mode="lines",
+        name="Fechamento",
+        line=dict(color="#60a5fa", width=2),
+        hovertemplate="%{x|%d/%m/%Y}<br>Fechamento: R$ %{y:.2f}<extra></extra>",
+    ))
+
+    buys = markers[markers["kind"] == "Compra"] if not markers.empty else pd.DataFrame()
+    profitable_sales = markers[markers["kind"] == "Venda com lucro"] if not markers.empty else pd.DataFrame()
+    losing_sales = markers[markers["kind"] == "Venda com prejuízo"] if not markers.empty else pd.DataFrame()
+
+    def add_trade_trace(data: pd.DataFrame, name: str, symbol: str, color: str):
+        if data.empty:
+            return
+        pnl_text = data["pnl"].apply(lambda value: "—" if pd.isna(value) else format_currency(float(value)))
+        fig.add_trace(go.Scatter(
+            x=data["date"],
+            y=data["close"],
+            mode="markers",
+            name=name,
+            marker=dict(symbol=symbol, color=color, size=13, line=dict(color="#e2e8f0", width=1)),
+            customdata=list(zip(data["qty"], data["price"], data["cost"], pnl_text)),
+            hovertemplate=(
+                "%{x|%d/%m/%Y}<br>Qtd: %{customdata[0]}<br>Preço executado: R$ %{customdata[1]:.2f}"
+                "<br>Custo: R$ %{customdata[2]:.2f}<br>Resultado: %{customdata[3]}<extra>" + name + "</extra>"
+            ),
+        ))
+
+    add_trade_trace(buys, "Compra", "circle", "#3b82f6")
+    add_trade_trace(profitable_sales, "Venda com lucro", "triangle-up", "#22c55e")
+    add_trade_trace(losing_sales, "Venda com prejuízo", "triangle-down", "#22c55e")
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color="#9ca3af", size=11),
+        xaxis=dict(gridcolor="#1e293b", title="Data"),
+        yaxis=dict(gridcolor="#1e293b", title="Fechamento", tickprefix="R$ ", tickformat=",.2f"),
+        margin=dict(l=0, r=0, t=10, b=0),
+        height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("● Compra  •  ▲ Venda com lucro  •  ▼ Venda com prejuízo. O resultado da venda usa o preço médio imediatamente anterior à operação.")
+
+
 def page_equity():
     """Página de análise de equity e performance."""
     st.markdown('<div class="section-title">Análise de Performance</div>', unsafe_allow_html=True)
@@ -1006,7 +1156,7 @@ def main():
 
         page = st.radio(
             "Navegação",
-            options=["Resumo", "Carteira", "Sinais", "Ordens", "Performance", "Jobs", "Configurações"],
+            options=["Resumo", "Carteira", "Sinais", "Ordens", "Histórico por Ativo", "Performance", "Jobs", "Configurações"],
             label_visibility="collapsed",
         )
 
@@ -1053,6 +1203,9 @@ def main():
     elif page == "Ordens":
         st.title("Histórico de Ordens")
         page_orders()
+    elif page == "Histórico por Ativo":
+        st.title("Histórico por Ativo")
+        page_asset_history()
     elif page == "Performance":
         st.title("Análise de Performance")
         page_equity()

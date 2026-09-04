@@ -1,7 +1,7 @@
 # Memoriais Descritivos — QuantB3
 
-**Versão documental:** 1.2  
-**Atualizado em:** 15/08/2026  
+**Versão documental:** 1.3  
+**Atualizado em:** 03/09/2026  
 **Escopo:** operação simulada (paper trading), sem capital real.
 
 Este documento consolida os memoriais operacional, do modelo, de engenharia e do simulador. Deve ser atualizado quando houver mudanças em modelo, coleta, workflows ou regras de execução.
@@ -22,6 +22,8 @@ Os workflows aceitam disparo manual. Antes da execução de uma ordem, uma nova 
 ### Notificações
 
 Os relatórios operacionais são enviados para Telegram e e-mail. O e-mail pode usar Brevo, Resend ou SMTP. As credenciais ficam exclusivamente nos GitHub Secrets e nunca devem ser incluídas no repositório.
+
+Além das notificações ativas dos jobs, o bot do Telegram oferece consultas sob demanda sobre a simulação. Essa interface é somente de leitura: não cria, altera ou executa ordens.
 
 ### Recuperação da base de preços
 
@@ -56,7 +58,10 @@ GitHub Actions → jobs Python → Supabase/PostgreSQL → Streamlit Cloud
                     ├─ yfinance (OHLCV)
                     ├─ LightGBM (ranking)
                     ├─ SMTP/API (e-mail)
-                    └─ Telegram Bot API
+                    └─ Telegram Bot API (notificações)
+
+Telegram → Supabase Edge Function `telegram-bot` → Supabase/PostgreSQL
+                                                    └─ respostas e gráfico SVG
 ```
 
 As principais tabelas são `prices`, `signals`, `orders`, `positions`, `equity`, `notifications` e `runs`. A tabela `prices` usa upsert por `(date, ticker)`; por isso, a rebaixada de 100 dias corrige dados sem criar duplicidade.
@@ -77,6 +82,27 @@ Na tela de carteira, **P&L Não Realizado** mede apenas a variação de mercado 
 Cada job registra execução na tabela `runs` e produz logs no GitHub Actions. O timeout por ticker limita bloqueios individuais do yfinance; o coletor continua com os demais ativos quando uma consulta falha.
 
 Segredos são mantidos em GitHub Secrets e Streamlit Secrets. Integrações externas de análise, como Power BI e Excel, usam uma role PostgreSQL dedicada, com `LOGIN`, `CONNECT`, `USAGE` no schema `public` e somente `SELECT` nas tabelas atuais e futuras. Essa role não recebe permissões de inserção, alteração, exclusão, DDL ou privilégios administrativos. Para redes IPv4, a conexão deve usar o **Session Pooler** do Supabase na porta 5432, com TLS.
+
+### Bot consultivo do Telegram
+
+O bot é hospedado como a Edge Function `supabase/functions/telegram-bot/index.ts`. O Telegram entrega mensagens por webhook para a função; ela consulta as tabelas `signals`, `orders`, `positions` e `equity` e responde ao mesmo chat. Os comandos disponíveis são:
+
+| Comando | Resposta |
+|---|---|
+| `/sinais` | Sinais da data mais recente |
+| `/posicoes` | Posições reconciliadas mais recentes |
+| `/carteira` | Patrimônio, caixa, valor em posições e quantidade de ativos |
+| `/performance` | Retorno acumulado e máximo drawdown da curva de equity |
+| `/grafico` | Curva de patrimônio em arquivo SVG |
+| `/ajuda` ou `/start` | Lista de comandos |
+
+O endpoint não usa JWT porque o Telegram não o fornece. Em compensação, exige simultaneamente um segredo aleatório no parâmetro do webhook (`TELEGRAM_WEBHOOK_SECRET`) e igualdade exata entre o chat que enviou a mensagem e `TELEGRAM_ALLOWED_CHAT_ID`. O token do bot fica apenas em `TELEGRAM_BOT_TOKEN`, nos Edge Function Secrets do Supabase. Esses três valores não pertencem ao GitHub, ao Streamlit nem ao repositório.
+
+### Histórico por ativo no dashboard
+
+A página **Histórico por Ativo** restringe o seletor aos tickers que já possuem ordem `FILLED` ou que constam na carteira atual. Para o ativo escolhido, ela mostra o fechamento diário da tabela `prices` e sobrepõe as negociações executadas na data exata: compra com bolinha amarela, venda lucrativa com triângulo verde ascendente e venda com prejuízo com triângulo vermelho descendente.
+
+O cursor de cada venda apresenta quantidade, preço, custo, resultado financeiro e percentual realizado. O percentual é calculado contra o preço médio da posição imediatamente antes daquela venda, incluindo os custos registrados no razão.
 
 A aplicação é destinada exclusivamente a simulação.
 

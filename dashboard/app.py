@@ -3,20 +3,27 @@ QuantB3 — Dashboard Streamlit
 Cockpit quantitativo para acompanhamento da simulação.
 
 Deploy: Streamlit Community Cloud
-Autenticação: senha simples via st.secrets
+Autenticação: senha e OAuth do GitHub via st.secrets
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import hmac
 import os
+import secrets
 import sys
+import time
 from datetime import date, timedelta
 from typing import Optional
+from urllib.parse import urlencode
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 # Adiciona o diretório raiz ao path
@@ -165,30 +172,148 @@ st.markdown("""
 # AUTENTICAÇÃO
 # =============================================================================
 
-def check_password() -> bool:
-    """Verifica autenticação por senha com hash SHA-256."""
+def _get_secret(name: str) -> str:
+    """Obtém segredo do Streamlit Cloud ou de variável de ambiente local."""
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    return str(value or os.getenv(name, "")).strip()
+
+
+def _github_state(state_secret: str) -> str:
+    """Gera state assinado, de curta duração, para impedir callbacks forjados."""
+    payload = f"{int(time.time())}.{secrets.token_urlsafe(24)}"
+    signature = hmac.new(
+        state_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    encoded = base64.urlsafe_b64encode(
+        f"{payload}.{signature}".encode("utf-8")
+    ).decode("ascii")
+    return encoded.rstrip("=")
+
+
+def _valid_github_state(state: str, state_secret: str) -> bool:
+    """Valida a assinatura e a validade de dez minutos do state OAuth."""
+    try:
+        padded = state + "=" * (-len(state) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        payload, received_signature = decoded.rsplit(".", 1)
+        timestamp_str, _nonce = payload.split(".", 1)
+        timestamp = int(timestamp_str)
+        expected_signature = hmac.new(
+            state_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        age_seconds = time.time() - timestamp
+        return (
+            -60 <= age_seconds <= 600
+            and hmac.compare_digest(received_signature, expected_signature)
+        )
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+
+
+def _clear_oauth_query_params() -> None:
+    """Remove code/state da URL após o callback, evitando reuso acidental."""
+    st.query_params.clear()
+
+
+def _complete_github_login(config: dict[str, str]) -> bool:
+    """Troca o código OAuth por identidade GitHub sem armazenar o token."""
+    query = st.query_params
+    code = str(query.get("code", ""))
+    state = str(query.get("state", ""))
+
+    if not code:
+        if query.get("error"):
+            _clear_oauth_query_params()
+            st.warning("O login com GitHub foi cancelado.")
+        return False
+
+    if not state or not _valid_github_state(state, config["state_secret"]):
+        _clear_oauth_query_params()
+        st.error("Não foi possível validar o retorno do login GitHub. Tente novamente.")
+        return False
+
+    try:
+        token_response = requests.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+                "code": code,
+                "redirect_uri": config["redirect_uri"],
+            },
+            headers={"Accept": "application/json"},
+            timeout=15,
+        )
+        token_response.raise_for_status()
+        access_token = token_response.json().get("access_token", "")
+        if not access_token:
+            raise ValueError("GitHub não retornou um token de acesso.")
+
+        profile_response = requests.get(
+            "https://api.github.com/user",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {access_token}",
+            },
+            timeout=15,
+        )
+        profile_response.raise_for_status()
+        github_login = str(profile_response.json().get("login", "")).strip()
+        if not github_login:
+            raise ValueError("Não foi possível identificar a conta GitHub.")
+    except (requests.RequestException, ValueError) as exc:
+        _clear_oauth_query_params()
+        st.error(f"Não foi possível concluir o login GitHub: {exc}")
+        return False
+
+    allowed_logins = {
+        login.strip().lower()
+        for login in config["allowed_logins"].split(",")
+        if login.strip()
+    }
+    if github_login.lower() not in allowed_logins:
+        _clear_oauth_query_params()
+        st.error("Esta conta GitHub não está autorizada a acessar o dashboard.")
+        return False
+
+    st.session_state.authenticated = True
+    st.session_state.authenticated_user = github_login
+    st.session_state.authentication_method = "github"
+    _clear_oauth_query_params()
+    st.rerun()
+    return True
+
+
+def check_authentication() -> bool:
+    """Autentica por GitHub OAuth ou, como contingência, por senha local."""
 
     def _hash(password: str) -> str:
         return hashlib.sha256(password.encode()).hexdigest()
 
-    # Pega hash configurado (Streamlit Secrets ou env var)
-    stored_hash = ""
-    try:
-        stored_hash = st.secrets.get("DASHBOARD_PASSWORD_HASH", "")
-    except Exception:
-        pass
+    stored_hash = _get_secret("DASHBOARD_PASSWORD_HASH")
+    github_config = {
+        "client_id": _get_secret("GITHUB_OAUTH_CLIENT_ID"),
+        "client_secret": _get_secret("GITHUB_OAUTH_CLIENT_SECRET"),
+        "state_secret": _get_secret("GITHUB_OAUTH_STATE_SECRET"),
+        "redirect_uri": _get_secret("GITHUB_OAUTH_REDIRECT_URI"),
+        "allowed_logins": _get_secret("GITHUB_OAUTH_ALLOWED_LOGINS"),
+    }
+    github_enabled = all(github_config.values())
 
-    if not stored_hash:
-        stored_hash = os.getenv("DASHBOARD_PASSWORD_HASH", "")
-
-    if not stored_hash:
-        # Sem senha configurada: acesso livre (dev mode)
+    if not stored_hash and not github_enabled:
+        # Sem método configurado: acesso livre apenas no ambiente de desenvolvimento.
         return True
 
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
     if st.session_state.authenticated:
+        return True
+
+    if github_enabled and _complete_github_login(github_config):
         return True
 
     # Tela de login
@@ -209,18 +334,39 @@ def check_password() -> bool:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("---")
-        password = st.text_input(
-            "Senha de acesso",
-            type="password",
-            placeholder="Digite sua senha...",
-            key="login_password",
-        )
-        if st.button("Entrar", use_container_width=True, type="primary"):
-            if _hash(password) == stored_hash:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Senha incorreta")
+        if github_enabled:
+            authorize_url = "https://github.com/login/oauth/authorize?" + urlencode(
+                {
+                    "client_id": github_config["client_id"],
+                    "redirect_uri": github_config["redirect_uri"],
+                    "scope": "read:user",
+                    "state": _github_state(github_config["state_secret"]),
+                }
+            )
+            st.link_button(
+                "Entrar com GitHub",
+                authorize_url,
+                use_container_width=True,
+                type="primary",
+            )
+
+        if stored_hash:
+            if github_enabled:
+                st.caption("ou use a senha de contingência")
+            password = st.text_input(
+                "Senha de acesso",
+                type="password",
+                placeholder="Digite sua senha...",
+                key="login_password",
+            )
+            if st.button("Entrar com senha", use_container_width=True):
+                if _hash(password) == stored_hash:
+                    st.session_state.authenticated = True
+                    st.session_state.authenticated_user = ""
+                    st.session_state.authentication_method = "password"
+                    st.rerun()
+                else:
+                    st.error("Senha incorreta")
 
     return False
 
@@ -1137,7 +1283,7 @@ def main():
     """Ponto de entrada principal do dashboard."""
 
     # Verifica autenticação
-    if not check_password():
+    if not check_authentication():
         return
 
     # Sidebar
@@ -1192,6 +1338,8 @@ def main():
         # Logout
         if st.button("Sair", use_container_width=True):
             st.session_state.authenticated = False
+            st.session_state.pop("authenticated_user", None)
+            st.session_state.pop("authentication_method", None)
             st.rerun()
 
     # Conteúdo principal

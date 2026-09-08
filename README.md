@@ -30,7 +30,7 @@ GitHub Actions (cron)
     ├── GeracaoSinais, 18:30 BRT → monday.py   → primeiro pregão B3 da semana
     ├── NegociacaoOrdens, 18:45 BRT → tuesday.py → pregão seguinte aos sinais
     ├── ReconciliacaoCarteira, 19:00 BRT → wednesday.py → pregão seguinte à negociação
-    └── Diário  19:00 BRT → daily_prices.py → atualiza OHLCV
+    └── Diário  19:30 BRT → daily_prices.py → OHLCV + marcação da carteira
                                 │
                          Supabase (PostgreSQL)
                                 │
@@ -169,7 +169,7 @@ python scripts/generate_password_hash.py
 
 No GitHub, acesse *Actions* e execute manualmente cada workflow:
 
-1. **daily_prices** — Atualiza preços (teste primeiro)
+1. **daily_prices** — Atualiza preços e grava a marcação diária da carteira (teste primeiro)
 2. **GeracaoSinais** — Gera sinais no primeiro pregão B3 da semana
 3. **NegociacaoOrdens** — Executa o lote do pregão B3 anterior
 4. **ReconciliacaoCarteira** — Reconcilia as negociações do pregão B3 anterior

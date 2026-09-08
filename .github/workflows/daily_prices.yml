@@ -2,8 +2,8 @@ name: QuantB3 - Preços Diários
 
 on:
   schedule:
-    # Toda segunda a sexta às 22:00 UTC (19:00 BRT)
-    - cron: '0 22 * * 1-5'
+    # Após os três jobs operacionais, às 19:30 BRT.
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:  # Permite execução manual
     inputs:
       initial_tickers_per_run:
@@ -15,6 +15,9 @@ jobs:
   update-prices:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: quantb3-daily-mark-to-market
+      cancel-in-progress: false
 
     steps:
       - name: Checkout

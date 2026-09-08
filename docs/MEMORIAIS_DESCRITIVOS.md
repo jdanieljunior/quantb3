@@ -12,7 +12,7 @@ O QuantB3 acompanha o universo IBRX da B3 e gera uma carteira semanal simulada. 
 
 | Etapa | Workflow | Agenda (UTC) | Resultado |
 |---|---|---:|---|
-| Atualização de preços | `daily_prices` | Seg–Sex, 22:00 | OHLCV no Supabase |
+| Preços e marcação diária | `daily_prices` | Seg–Sex, 22:30 | OHLCV, posições, caixa e patrimônio no fechamento B3 |
 | Geração de sinais | `GeracaoSinais` (`monday_signals.yml`) | Seg–Sex, 21:30 | Primeiro pregão B3 da semana: sinais, ordens pendentes e notificações |
 | Execução simulada | `NegociacaoOrdens` (`tuesday_execution.yml`) | Seg–Sex, 21:45 | Pregão seguinte ao lote de sinais: preenchimento simulado das ordens |
 | Reconciliação | `ReconciliacaoCarteira` (`wednesday_reconcile.yml`) | Seg–Sex, 22:00 | Pregão seguinte à negociação: equity e resumo operacional |
@@ -26,6 +26,12 @@ O ciclo não depende mais do nome do dia da semana. O módulo `src/jobs/trading_
 A **GeracaoSinais** roda somente no primeiro pregão da semana: normalmente segunda-feira; se segunda for feriado, terça-feira; e assim por diante. A **NegociacaoOrdens** consulta exclusivamente o lote de sinais do pregão B3 imediatamente anterior. A **ReconciliacaoCarteira** consulta exclusivamente as ordens `FILLED` do pregão imediatamente anterior. Sem lote predecessor, ambos os jobs terminam como `skipped` e não alteram a carteira.
 
 Cada workflow possui grupo de concorrência próprio, evitando duas execuções simultâneas da mesma etapa. A tabela `runs` registra os identificadores operacionais `signal_generation`, `order_negotiation` e `portfolio_reconciliation`, além dos status `success`, `error` ou `skipped`.
+
+### Marcação diária a mercado
+
+Após as etapas operacionais, o workflow `daily_prices` executa às 19:30 BRT e chama `src/jobs/daily_mark_to_market.py`. Ele reconstrói caixa e quantidades exclusivamente pelas ordens `FILLED` até a data de fechamento, valoriza cada posição pelo `close` do mesmo dia e substitui o snapshot em `positions`. Em seguida, grava em `equity` os campos `equity`, `cash`, `pos_value` e `n_positions`.
+
+Se uma posição não possuir preço de fechamento no dia, a marcação falha sem sobrescrever o snapshot anterior. Em feriado ou antes da disponibilidade do fechamento, o job fica `skipped`, preservando o último snapshot válido. Assim, as telas de carteira e performance, o bot do Telegram e o Power BI passam a usar uma curva diária consistente sem criar operações simuladas adicionais.
 
 ### Notificações
 
@@ -83,7 +89,7 @@ O livro de ordens com status `FILLED` é a fonte de verdade para caixa e posiç�
 3. recompõe quantidade, preço médio, stop e take de cada posição;
 4. interrompe a reconciliação se identificar preço inválido, venda sem posição suficiente ou caixa negativo.
 
-Os snapshots em `positions` e `equity` são projeções do razão, não insumos para uma nova execução. A reconciliação substitui integralmente as posições da data, eliminando ativos encerrados que poderiam permanecer em snapshots anteriores. O patrimônio obedece sempre à identidade `equity = cash + pos_value`.
+Os snapshots em `positions` e `equity` são projeções do razão, não insumos para uma nova execução. A reconciliação e a marcação diária substituem integralmente as posições da data, eliminando ativos encerrados que poderiam permanecer em snapshots anteriores. O patrimônio obedece sempre à identidade `equity = cash + pos_value`.
 
 Na tela de carteira, **P&L Não Realizado** mede apenas a variação de mercado das posições abertas. O retorno total da página de performance inclui também os custos operacionais e é calculado contra o capital inicial da simulação. CAGR não é exibido para séries inferiores a 30 dias.
 

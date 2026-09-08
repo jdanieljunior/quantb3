@@ -18,7 +18,7 @@ O QuantB3 é um cockpit quantitativo para acompanhamento de sinais semanais de c
 - **Sticky turnover:** Mantém posições no top N+4 para reduzir rotatividade
 - **Filtro de liquidez:** Volume médio 21d ≥ Percentil 10 do universo
 - **Gestão de risco:** Stop -5% / Take 1:2,5
-- **Ciclo:** Segunda (sinal) → Terça (execução simulada) → Quarta (reconciliação)
+- **Ciclo:** primeiro pregão B3 da semana (sinal) → próximo pregão (execução simulada) → próximo pregão (reconciliação)
 
 ---
 
@@ -27,9 +27,9 @@ O QuantB3 é um cockpit quantitativo para acompanhamento de sinais semanais de c
 ```
 GitHub Actions (cron)
     │
-    ├── Segunda 18:30 BRT → monday.py   → sinais + e-mail + Telegram
-    ├── Terça   18:30 BRT → tuesday.py  → execução simulada + notas
-    ├── Quarta  12:00 BRT → wednesday.py → reconciliação + equity
+    ├── GeracaoSinais, 18:30 BRT → monday.py   → primeiro pregão B3 da semana
+    ├── NegociacaoOrdens, 18:45 BRT → tuesday.py → pregão seguinte aos sinais
+    ├── ReconciliacaoCarteira, 19:00 BRT → wednesday.py → pregão seguinte à negociação
     └── Diário  19:00 BRT → daily_prices.py → atualiza OHLCV
                                 │
                          Supabase (PostgreSQL)
@@ -170,9 +170,9 @@ python scripts/generate_password_hash.py
 No GitHub, acesse *Actions* e execute manualmente cada workflow:
 
 1. **daily_prices** — Atualiza preços (teste primeiro)
-2. **monday_signals** — Gera sinais (pode demorar 5-10 min pelo treinamento LGBM)
-3. **tuesday_execution** — Executa ordens simuladas
-4. **wednesday_reconcile** — Reconcilia carteira
+2. **GeracaoSinais** — Gera sinais no primeiro pregão B3 da semana
+3. **NegociacaoOrdens** — Executa o lote do pregão B3 anterior
+4. **ReconciliacaoCarteira** — Reconcilia as negociações do pregão B3 anterior
 
 ---
 
@@ -186,9 +186,9 @@ quantb3/
 ├── .gitignore
 ├── .github/workflows/
 │   ├── daily_prices.yml               # Job diário de preços
-│   ├── monday_signals.yml             # Job de sinais (segunda)
-│   ├── tuesday_execution.yml          # Job de execução (terça)
-│   └── wednesday_reconcile.yml        # Job de reconciliação (quarta)
+│   ├── monday_signals.yml             # GeracaoSinais (primeiro pregão B3)
+│   ├── tuesday_execution.yml          # NegociacaoOrdens (pregão seguinte)
+│   └── wednesday_reconcile.yml        # ReconciliacaoCarteira (pregão seguinte)
 ├── config/
 │   └── settings.py                    # Parâmetros centrais do modelo
 ├── sql/
@@ -212,9 +212,9 @@ quantb3/
 │   │   ├── telegram_sender.py       # Notificações Telegram
 │   │   └── email_sender.py          # Notificações e-mail
 │   └── jobs/
-│       ├── monday.py                # Job segunda-feira
-│       ├── tuesday.py               # Job terça-feira
-│       ├── wednesday.py             # Job quarta-feira
+│       ├── monday.py                # Geração de sinais
+│       ├── tuesday.py               # Negociação de ordens
+│       ├── wednesday.py             # Reconciliação de carteira
 │       └── daily_prices.py          # Job diário de preços
 ├── dashboard/
 │   ├── app.py                       # Dashboard Streamlit
@@ -305,7 +305,7 @@ streamlit run dashboard/app.py
 **Sem sinais gerados:**
 - Verifique se há dados suficientes no banco (mínimo 378 dias = ~1,5 anos)
 - Execute `daily_prices` manualmente para garantir dados atualizados
-- Verifique os logs em *GitHub Actions → monday_signals → último run*
+- Verifique os logs em *GitHub Actions → GeracaoSinais → último run*
 
 **Dashboard não carrega:**
 - Verifique se `DATABASE_URL` está nos Streamlit Secrets

@@ -1,13 +1,13 @@
-name: QuantB3 - Reconciliação Quarta-feira
+name: QuantB3 - ReconciliacaoCarteira
 
 on:
   schedule:
-    # Toda quarta às 15:00 UTC (12:00 BRT)
-    - cron: '0 15 * * 3'
+    # Dias úteis às 19:00 BRT. Só reconcilia negociações do pregão anterior.
+    - cron: '0 22 * * 1-5'
   workflow_dispatch:
     inputs:
       reconcile_date:
-        description: 'Data de reconciliação (YYYY-MM-DD, default: hoje)'
+        description: 'Data de pregão para reconciliar (YYYY-MM-DD; feriados são recusados)'
         required: false
         default: ''
 
@@ -15,6 +15,9 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: quantb3-portfolio-reconciliation
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -42,6 +45,7 @@ jobs:
           EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
           EMAIL_SMTP_PASSWORD: ${{ secrets.EMAIL_SMTP_PASSWORD }}
           RECONCILE_DATE: ${{ github.event.inputs.reconcile_date }}
+          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           python -c "
           import os
@@ -55,7 +59,10 @@ jobs:
           else:
               reconcile_date = date.today()
 
-          result = run_wednesday_job(reconcile_date=reconcile_date)
+          result = run_wednesday_job(
+              reconcile_date=reconcile_date,
+              strict_date=os.environ.get('MANUAL_RUN', '').lower() == 'true',
+          )
           print(f'Status: {result[\"status\"]}')
           print(f'Posições: {result.get(\"n_positions\", 0)}')
           print(f'Equity: R$ {result.get(\"equity\", 0):.2f}')
@@ -74,6 +81,6 @@ jobs:
           if token and chat_id:
               requests.post(
                   f'https://api.telegram.org/bot{token}/sendMessage',
-                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: Job de RECONCILIAÇÃO (quarta) FALHOU!'}
+                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: ReconciliacaoCarteira FALHOU!'}
               )
           "

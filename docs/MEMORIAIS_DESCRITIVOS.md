@@ -1,7 +1,7 @@
 # Memoriais Descritivos — QuantB3
 
-**Versão documental:** 1.3  
-**Atualizado em:** 03/09/2026  
+**Versão documental:** 1.4
+**Atualizado em:** 08/09/2026
 **Escopo:** operação simulada (paper trading), sem capital real.
 
 Este documento consolida os memoriais operacional, do modelo, de engenharia e do simulador. Deve ser atualizado quando houver mudanças em modelo, coleta, workflows ou regras de execução.
@@ -13,11 +13,19 @@ O QuantB3 acompanha o universo IBRX da B3 e gera uma carteira semanal simulada. 
 | Etapa | Workflow | Agenda (UTC) | Resultado |
 |---|---|---:|---|
 | Atualização de preços | `daily_prices` | Seg–Sex, 22:00 | OHLCV no Supabase |
-| Geração de sinais | `monday_signals` | Segunda, 21:30 | Sinais, ordens pendentes e notificações |
-| Execução simulada | `tuesday_execution` | Terça, 21:30 | Preenchimento simulado das ordens |
-| Reconciliação | `wednesday_reconcile` | Quarta, 15:00 | Equity e resumo operacional |
+| Geração de sinais | `GeracaoSinais` (`monday_signals.yml`) | Seg–Sex, 21:30 | Primeiro pregão B3 da semana: sinais, ordens pendentes e notificações |
+| Execução simulada | `NegociacaoOrdens` (`tuesday_execution.yml`) | Seg–Sex, 21:45 | Pregão seguinte ao lote de sinais: preenchimento simulado das ordens |
+| Reconciliação | `ReconciliacaoCarteira` (`wednesday_reconcile.yml`) | Seg–Sex, 22:00 | Pregão seguinte à negociação: equity e resumo operacional |
 
-Os workflows aceitam disparo manual. Antes da execução de uma ordem, uma nova execução de segunda-feira substitui atomicamente os sinais e as ordens `PENDING` da mesma data. Após existir ordem `FILLED`, a geração para aquela data é bloqueada, preservando o vínculo entre sinais e execução.
+Os workflows aceitam disparo manual. Antes da execução de uma ordem, uma nova execução de geração substitui atomicamente os sinais e as ordens `PENDING` da mesma data. Após existir ordem `FILLED`, a geração para aquela data é bloqueada, preservando o vínculo entre sinais e execução.
+
+### Orquestração por pregão B3
+
+O ciclo não depende mais do nome do dia da semana. O módulo `src/jobs/trading_calendar.py` identifica finais de semana, feriados nacionais e feriados recorrentes da B3. Em dia sem pregão, o workflow automático é encerrado com status `skipped`, sem atualizar sinais, ordens, posições ou patrimônio. Uma data manual sem pregão é recusada explicitamente.
+
+A **GeracaoSinais** roda somente no primeiro pregão da semana: normalmente segunda-feira; se segunda for feriado, terça-feira; e assim por diante. A **NegociacaoOrdens** consulta exclusivamente o lote de sinais do pregão B3 imediatamente anterior. A **ReconciliacaoCarteira** consulta exclusivamente as ordens `FILLED` do pregão imediatamente anterior. Sem lote predecessor, ambos os jobs terminam como `skipped` e não alteram a carteira.
+
+Cada workflow possui grupo de concorrência próprio, evitando duas execuções simultâneas da mesma etapa. A tabela `runs` registra os identificadores operacionais `signal_generation`, `order_negotiation` e `portfolio_reconciliation`, além dos status `success`, `error` ou `skipped`.
 
 ### Notificações
 
@@ -108,7 +116,7 @@ A aplicação é destinada exclusivamente a simulação.
 
 ## 4. Memorial do Simulador OHLCV
 
-As ordens criadas na segunda-feira são simuladas na terça-feira. A execução usa a série OHLCV e aplica custos operacionais definidos em `config/settings.py`:
+As ordens criadas na geração de sinais são simuladas no pregão B3 seguinte. A execução usa a série OHLCV e aplica custos operacionais definidos em `config/settings.py`:
 
 | Parâmetro | Valor |
 |---|---:|
@@ -123,7 +131,7 @@ O simulador não envia ordens a corretoras e não movimenta recursos. Os resulta
 
 1. Confirme que `daily_prices` terminou com sucesso.
 2. Confirme a cobertura histórica e a ausência de lacunas recentes.
-3. Verifique se já existem ordens `FILLED` para a mesma data de sinal; nesse caso, não reexecute `monday_signals`.
+3. Verifique se já existem ordens `FILLED` para a mesma data de sinal; nesse caso, não reexecute `GeracaoSinais`.
 4. Confirme que Telegram e e-mail estão configurados.
-5. Dispare `monday_signals` somente uma vez para aquela data. Antes da terça-feira, reprocessamentos substituem somente o plano pendente; depois da execução, são bloqueados.
-6. Após `tuesday_execution`, execute `wednesday_reconcile` e confirme a igualdade entre patrimônio, caixa e posições.
+5. Em execução manual, informe sempre uma data de pregão B3. Feriados são recusados para não criar um ciclo inconsistente.
+6. Após `NegociacaoOrdens`, aguarde ou execute `ReconciliacaoCarteira` somente no pregão B3 seguinte e confirme a igualdade entre patrimônio, caixa e posições.

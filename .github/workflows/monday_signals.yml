@@ -1,13 +1,13 @@
-name: QuantB3 - Sinais Segunda-feira
+name: QuantB3 - GeracaoSinais
 
 on:
   schedule:
-    # Toda segunda às 21:30 UTC (18:30 BRT)
-    - cron: '30 21 * * 1'
+    # Dias úteis às 18:30 BRT. Só gera no primeiro pregão B3 da semana.
+    - cron: '30 21 * * 1-5'
   workflow_dispatch:
     inputs:
       signal_date:
-        description: 'Data do sinal (YYYY-MM-DD, default: hoje)'
+        description: 'Data de pregão para gerar o lote (YYYY-MM-DD; feriados são recusados)'
         required: false
         default: ''
 
@@ -15,6 +15,9 @@ jobs:
   generate-signals:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: quantb3-signal-generation
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -39,6 +42,7 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           SIGNAL_DATE: ${{ github.event.inputs.signal_date }}
+          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           python -c "
           import os
@@ -52,7 +56,10 @@ jobs:
           else:
               signal_date = datetime.now(ZoneInfo('America/Sao_Paulo')).date()
 
-          result = run_monday_job(signal_date=signal_date)
+          result = run_monday_job(
+              signal_date=signal_date,
+              strict_date=os.environ.get('MANUAL_RUN', '').lower() == 'true',
+          )
           print(f'Status: {result[\"status\"]}')
           print(f'Top tickers: {result.get(\"top_tickers\", [])}')
           "
@@ -70,6 +77,6 @@ jobs:
           if token and chat_id:
               requests.post(
                   f'https://api.telegram.org/bot{token}/sendMessage',
-                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: Job de SINAIS (segunda) FALHOU!'}
+                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: GeracaoSinais FALHOU!'}
               )
           "

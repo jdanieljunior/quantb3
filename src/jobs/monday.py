@@ -1,8 +1,6 @@
 """
-QuantB3 — Job de Segunda-feira
-Gera sinais semanais, relatório e notificações.
-
-Executado via GitHub Actions toda segunda após o fechamento (~18:30 BRT).
+QuantB3 — Geração de Sinais
+Gera sinais semanais no primeiro pregão B3 da semana, relatório e notificações.
 """
 
 from __future__ import annotations
@@ -28,6 +26,11 @@ from src.model.train_predict import QuantB3Model
 from src.notify.email_sender import send_signal_report
 from src.notify.telegram_sender import send_report
 from src.reporting.signal_report import generate_signal_report
+from src.jobs.trading_calendar import (
+    is_b3_trading_day,
+    is_first_b3_trading_day_of_week,
+    next_b3_trading_day,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,13 +47,18 @@ def _brazil_today() -> date:
     return datetime.now(BRAZIL_TZ).date()
 
 
-def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
+def run_monday_job(
+    signal_date: date | None = None,
+    seed: int = 42,
+    strict_date: bool = False,
+) -> dict:
     """
-    Executa o job completo de segunda-feira.
+    Executa a geração semanal no primeiro pregão B3 da semana.
 
     Args:
-        signal_date: Data do sinal (default: hoje)
+        signal_date: Data operacional (default: hoje)
         seed: Semente aleatória
+        strict_date: Rejeita uma data sem pregão, para execuções manuais.
 
     Returns:
         Dict com resultado do job
@@ -58,12 +66,28 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
     if signal_date is None:
         signal_date = _brazil_today()
 
-    run_id = start_run("monday")
+    run_id = start_run("signal_generation")
     log_lines = []
 
     try:
-        logger.info(f"=== JOB SEGUNDA-FEIRA: {signal_date} ===")
-        log_lines.append(f"Iniciando job segunda: {signal_date}")
+        logger.info(f"=== GERAÇÃO DE SINAIS: {signal_date} ===")
+        log_lines.append(f"Data operacional: {signal_date}")
+
+        if not is_b3_trading_day(signal_date):
+            message = f"{signal_date} não é pregão B3; a geração será retomada no próximo pregão."
+            logger.info(message)
+            log_lines.append(f"SKIPPED: {message}")
+            if strict_date:
+                raise ValueError(message)
+            finish_run(run_id, "skipped", "\n".join(log_lines))
+            return {"status": "skipped", "reason": "market_closed", "signal_date": signal_date}
+
+        if not is_first_b3_trading_day_of_week(signal_date):
+            message = "Hoje não é o primeiro pregão B3 da semana; não há novo lote de sinais."
+            logger.info(message)
+            log_lines.append(f"SKIPPED: {message}")
+            finish_run(run_id, "skipped", "\n".join(log_lines))
+            return {"status": "skipped", "reason": "not_first_trading_day", "signal_date": signal_date}
 
         # 1. Atualizar preços
         logger.info("1. Atualizando preços...")
@@ -149,11 +173,8 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         logger.info(f"   Top {N_POSITIONS}: {top_tickers}")
         log_lines.append(f"Top {N_POSITIONS}: {', '.join(top_tickers)}")
 
-        # 4. Preços de referência (fechamento da segunda)
-        if signal_ts in prices.index:
-            ref_prices = prices.loc[signal_ts]
-        else:
-            ref_prices = prices.iloc[-1]
+        # 4. Preços de referência: fechamento do pregão do lote.
+        ref_prices = prices.loc[signal_ts]
 
         # 5. Equity para a alocação: caixa reconstruído + posições a mercado.
         pos_value = sum(
@@ -163,7 +184,7 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         equity = cash + pos_value
 
         # 6. Gerar ordens e sinais
-        exec_date = _next_tuesday(signal_date)
+        exec_date = next_b3_trading_day(signal_date)
         orders, signals_list = prepare_weekly_orders(
             top_tickers=top_tickers,
             scores=scores,
@@ -213,7 +234,7 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         log_lines.append(f"Telegram: {'OK' if tg_ok else 'FALHOU'}")
         log_lines.append(f"E-mail: {'OK' if email_ok else 'FALHOU'}")
 
-        logger.info("=== JOB SEGUNDA CONCLUÍDO ===")
+        logger.info("=== GERAÇÃO DE SINAIS CONCLUÍDA ===")
         finish_run(run_id, "success", "\n".join(log_lines))
 
         return {
@@ -225,20 +246,10 @@ def run_monday_job(signal_date: date = None, seed: int = 42) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Erro no job de segunda: {e}", exc_info=True)
+        logger.error(f"Erro na geração de sinais: {e}", exc_info=True)
         log_lines.append(f"ERRO: {e}")
         finish_run(run_id, "error", "\n".join(log_lines))
         raise
-
-
-def _next_tuesday(d: date) -> date:
-    """Retorna a próxima terça-feira a partir de d."""
-    days_ahead = 1 - d.weekday()  # 1 = terça
-    if days_ahead <= 0:
-        days_ahead += 7
-    return d + timedelta(days=days_ahead)
-
-
 if __name__ == "__main__":
     result = run_monday_job()
     print(result.get("report", "Sem relatório"))

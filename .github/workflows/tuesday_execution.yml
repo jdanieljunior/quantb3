@@ -1,13 +1,13 @@
-name: QuantB3 - Execução Terça-feira
+name: QuantB3 - NegociacaoOrdens
 
 on:
   schedule:
-    # Toda terça às 21:30 UTC (18:30 BRT)
-    - cron: '30 21 * * 2'
+    # Dias úteis às 18:45 BRT. Só negocia o lote do pregão B3 anterior.
+    - cron: '45 21 * * 1-5'
   workflow_dispatch:
     inputs:
       exec_date:
-        description: 'Data de execução (YYYY-MM-DD, default: hoje)'
+        description: 'Data de pregão para negociar (YYYY-MM-DD; feriados são recusados)'
         required: false
         default: ''
 
@@ -15,6 +15,9 @@ jobs:
   execute-orders:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: quantb3-order-negotiation
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -42,6 +45,7 @@ jobs:
           EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
           EMAIL_SMTP_PASSWORD: ${{ secrets.EMAIL_SMTP_PASSWORD }}
           EXEC_DATE: ${{ github.event.inputs.exec_date }}
+          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           python -c "
           import os
@@ -55,7 +59,10 @@ jobs:
           else:
               exec_date = date.today()
 
-          result = run_tuesday_job(exec_date=exec_date)
+          result = run_tuesday_job(
+              exec_date=exec_date,
+              strict_date=os.environ.get('MANUAL_RUN', '').lower() == 'true',
+          )
           print(f'Status: {result[\"status\"]}')
           print(f'Ordens executadas: {result.get(\"n_executed\", 0)}')
           "
@@ -73,6 +80,6 @@ jobs:
           if token and chat_id:
               requests.post(
                   f'https://api.telegram.org/bot{token}/sendMessage',
-                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: Job de EXECUÇÃO (terça) FALHOU!'}
+                  json={'chat_id': chat_id, 'text': '🚨 QuantB3: NegociacaoOrdens FALHOU!'}
               )
           "

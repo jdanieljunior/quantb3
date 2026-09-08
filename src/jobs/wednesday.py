@@ -1,15 +1,13 @@
 """
-QuantB3 — Job de Quarta-feira
-Reconcilia carteira, atualiza posições e equity oficial.
-
-Executado via GitHub Actions toda quarta (~12:00 BRT).
+QuantB3 — Reconciliação de Carteira
+Reconcilia a carteira no pregão B3 seguinte à negociação de ordens.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date
 from typing import Dict, List
 
 from config.settings import SIMULATION_LABEL
@@ -24,6 +22,7 @@ from src.db.repositories import (
 )
 from src.notify.email_sender import send_reconcile_summary
 from src.notify.telegram_sender import send_message
+from src.jobs.trading_calendar import is_b3_trading_day, previous_b3_trading_day
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +32,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_wednesday_job(reconcile_date: date = None) -> dict:
+def run_wednesday_job(
+    reconcile_date: date | None = None,
+    strict_date: bool = False,
+) -> dict:
     """
-    Executa o job completo de quarta-feira.
+    Reconcilia somente as negociações do pregão B3 imediatamente anterior.
 
     Args:
-        reconcile_date: Data de reconciliação (default: hoje)
+        reconcile_date: Data operacional (default: hoje)
+        strict_date: Rejeita uma data sem pregão, para execuções manuais.
 
     Returns:
         Dict com resultado do job
@@ -46,15 +49,24 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
     if reconcile_date is None:
         reconcile_date = date.today()
 
-    run_id = start_run("wednesday")
+    run_id = start_run("portfolio_reconciliation")
     log_lines = []
 
     try:
-        logger.info(f"=== JOB QUARTA-FEIRA: {reconcile_date} ===")
-        log_lines.append(f"Iniciando job quarta: {reconcile_date}")
+        logger.info(f"=== RECONCILIAÇÃO DE CARTEIRA: {reconcile_date} ===")
+        log_lines.append(f"Data operacional: {reconcile_date}")
 
-        # 1. Carregar ordens FILLED da terça
-        exec_date = _prev_tuesday(reconcile_date)
+        if not is_b3_trading_day(reconcile_date):
+            message = f"{reconcile_date} não é pregão B3; não há reconciliação a executar."
+            logger.info(message)
+            log_lines.append(f"SKIPPED: {message}")
+            if strict_date:
+                raise ValueError(message)
+            finish_run(run_id, "skipped", "\n".join(log_lines))
+            return {"status": "skipped", "reason": "market_closed", "reconcile_date": reconcile_date}
+
+        # 1. Carregar somente as ordens negociadas no pregão anterior.
+        exec_date = previous_b3_trading_day(reconcile_date)
         logger.info(f"1. Carregando ordens executadas em {exec_date}...")
 
         filled_orders = get_orders(
@@ -64,8 +76,11 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
         )
 
         if not filled_orders:
-            logger.warning(f"Sem ordens FILLED para {exec_date}")
-            log_lines.append("Sem ordens executadas para reconciliar")
+            message = f"Sem ordens FILLED para {exec_date}; nenhuma reconciliação é necessária."
+            logger.info(message)
+            log_lines.append(f"SKIPPED: {message}")
+            finish_run(run_id, "skipped", "\n".join(log_lines))
+            return {"status": "skipped", "reason": "no_filled_dependency", "n_positions": 0}
 
         logger.info(f"   {len(filled_orders)} ordens FILLED")
         log_lines.append(f"Ordens FILLED: {len(filled_orders)}")
@@ -152,7 +167,7 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
         log_lines.append(f"Telegram: {'OK' if tg_ok else 'FALHOU'}")
         log_lines.append(f"E-mail: {'OK' if email_ok else 'FALHOU'}")
 
-        logger.info("=== JOB QUARTA CONCLUÍDO ===")
+        logger.info("=== RECONCILIAÇÃO DE CARTEIRA CONCLUÍDA ===")
         finish_run(run_id, "success", "\n".join(log_lines))
 
         return {
@@ -164,7 +179,7 @@ def run_wednesday_job(reconcile_date: date = None) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Erro no job de quarta: {e}", exc_info=True)
+        logger.error(f"Erro na reconciliação de carteira: {e}", exc_info=True)
         log_lines.append(f"ERRO: {e}")
         finish_run(run_id, "error", "\n".join(log_lines))
         raise
@@ -239,14 +254,6 @@ def _generate_reconcile_summary(
     ]
 
     return "\n".join(lines)
-
-
-def _prev_tuesday(d: date) -> date:
-    """Retorna a terça-feira anterior a d."""
-    days_back = (d.weekday() - 1) % 7
-    return d - timedelta(days=days_back)
-
-
 if __name__ == "__main__":
     result = run_wednesday_job()
     print(result.get("summary", "Sem resumo"))

@@ -1,16 +1,14 @@
 """
-QuantB3 — Job de Terça-feira
-Executa ordens pendentes com preço triangular simulado.
+QuantB3 — Negociação de Ordens
+Executa as ordens do lote de sinais do pregão B3 anterior com preço triangular simulado.
 Gera notas de negociação e notifica.
-
-Executado via GitHub Actions toda terça após o fechamento (~18:30 BRT).
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date
 from typing import Dict
 from src.data.collector import update_prices
 from src.db.repositories import (
@@ -27,6 +25,7 @@ from src.execution.simulator import execute_pending_orders
 from src.notify.email_sender import send_trade_notes
 from src.notify.telegram_sender import send_report
 from src.reporting.signal_report import generate_trade_notes
+from src.jobs.trading_calendar import is_b3_trading_day, previous_b3_trading_day
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,13 +35,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
+def run_tuesday_job(
+    exec_date: date | None = None,
+    seed: int = 42,
+    strict_date: bool = False,
+) -> dict:
     """
-    Executa o job completo de terça-feira.
+    Executa as ordens somente no pregão seguinte ao lote de sinais.
 
     Args:
-        exec_date: Data de execução (default: hoje)
+        exec_date: Data operacional (default: hoje)
         seed: Semente aleatória para preço triangular
+        strict_date: Rejeita uma data sem pregão, para execuções manuais.
 
     Returns:
         Dict com resultado do job
@@ -50,28 +54,38 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
     if exec_date is None:
         exec_date = date.today()
 
-    run_id = start_run("tuesday")
+    run_id = start_run("order_negotiation")
     log_lines = []
 
     try:
-        logger.info(f"=== JOB TERÇA-FEIRA: {exec_date} ===")
-        log_lines.append(f"Iniciando job terça: {exec_date}")
+        logger.info(f"=== NEGOCIAÇÃO DE ORDENS: {exec_date} ===")
+        log_lines.append(f"Data operacional: {exec_date}")
+
+        if not is_b3_trading_day(exec_date):
+            message = f"{exec_date} não é pregão B3; não há negociação a executar."
+            logger.info(message)
+            log_lines.append(f"SKIPPED: {message}")
+            if strict_date:
+                raise ValueError(message)
+            finish_run(run_id, "skipped", "\n".join(log_lines))
+            return {"status": "skipped", "reason": "market_closed", "exec_date": exec_date}
 
         # 1. Atualizar preços do dia
         logger.info("1. Atualizando preços...")
         n_rows = update_prices()
         log_lines.append(f"Preços atualizados: {n_rows} registros")
 
-        # 2. Carregar ordens pendentes
-        logger.info("2. Carregando ordens pendentes...")
-        signal_date = _prev_monday(exec_date)
+        # 2. Só negocia o lote criado no pregão imediatamente anterior.
+        logger.info("2. Carregando ordens pendentes do pregão anterior...")
+        signal_date = previous_b3_trading_day(exec_date)
         pending = get_pending_orders(signal_date)
 
         if not pending:
-            logger.warning(f"Sem ordens pendentes para {signal_date}")
-            log_lines.append("Sem ordens pendentes")
-            finish_run(run_id, "success", "\n".join(log_lines))
-            return {"status": "success", "n_executed": 0}
+            message = f"Sem ordens pendentes do lote {signal_date}; nenhuma negociação é necessária."
+            logger.info(message)
+            log_lines.append(f"SKIPPED: {message}")
+            finish_run(run_id, "skipped", "\n".join(log_lines))
+            return {"status": "skipped", "reason": "no_pending_dependency", "n_executed": 0}
 
         logger.info(f"   {len(pending)} ordens pendentes")
         log_lines.append(f"Ordens pendentes: {len(pending)}")
@@ -164,7 +178,7 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
         log_lines.append(f"Telegram: {'OK' if tg_ok else 'FALHOU'}")
         log_lines.append(f"E-mail: {'OK' if email_ok else 'FALHOU'}")
 
-        logger.info("=== JOB TERÇA CONCLUÍDO ===")
+        logger.info("=== NEGOCIAÇÃO DE ORDENS CONCLUÍDA ===")
         finish_run(run_id, "success", "\n".join(log_lines))
 
         return {
@@ -177,18 +191,10 @@ def run_tuesday_job(exec_date: date = None, seed: int = 42) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Erro no job de terça: {e}", exc_info=True)
+        logger.error(f"Erro na negociação de ordens: {e}", exc_info=True)
         log_lines.append(f"ERRO: {e}")
         finish_run(run_id, "error", "\n".join(log_lines))
         raise
-
-
-def _prev_monday(d: date) -> date:
-    """Retorna a segunda-feira anterior a d."""
-    days_back = d.weekday()  # 0=seg, 1=ter, ...
-    return d - timedelta(days=days_back)
-
-
 if __name__ == "__main__":
     result = run_tuesday_job()
     print(result.get("notes", "Sem notas"))

@@ -507,7 +507,8 @@ def load_operational_health() -> dict:
 
         latest_price = get_latest_price_date()
         latest_equity_date = latest_equity.get("date")
-        if positions and latest_price and latest_equity_date and latest_equity_date < latest_price:
+        latest_equity_day = pd.Timestamp(latest_equity_date).date() if latest_equity_date else None
+        if positions and latest_price and latest_equity_day and latest_equity_day < latest_price:
             alerts.append(("warning", "Os preços são mais recentes que o snapshot de patrimônio."))
 
         return {

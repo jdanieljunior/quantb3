@@ -24,7 +24,7 @@ from src.db.repositories import (
 from src.model.ranking import prepare_weekly_orders
 from src.model.train_predict import QuantB3Model
 from src.notify.email_sender import send_signal_report
-from src.notify.telegram_sender import send_report
+from src.notify.telegram_sender import send_message, send_report
 from src.reporting.signal_report import generate_signal_report
 from src.jobs.trading_calendar import (
     is_b3_trading_day,
@@ -74,12 +74,26 @@ def run_monday_job(
         log_lines.append(f"Data operacional: {signal_date}")
 
         if not is_b3_trading_day(signal_date):
-            message = f"{signal_date} não é pregão B3; a geração será retomada no próximo pregão."
+            next_session = next_b3_trading_day(signal_date)
+            message = (
+                f"{signal_date} não é pregão B3; a geração será retomada em "
+                f"{next_session}."
+            )
             logger.info(message)
             log_lines.append(f"SKIPPED: {message}")
             if strict_date:
                 raise ValueError(message)
             finish_run(run_id, "skipped", "\n".join(log_lines))
+            notice = (
+                "ℹ️ QuantB3 | GeracaoSinais adiada\n"
+                f"{signal_date.strftime('%d/%m/%Y')} não é pregão B3.\n"
+                f"Próxima tentativa: {next_session.strftime('%d/%m/%Y')}."
+            )
+            tg_ok = send_message(notice)
+            log_notification(
+                "telegram", "market_closed", notice,
+                "sent" if tg_ok else "failed",
+            )
             return {"status": "skipped", "reason": "market_closed", "signal_date": signal_date}
 
         if not is_first_b3_trading_day_of_week(signal_date):

@@ -21,7 +21,7 @@ Os workflows aceitam disparo manual. Antes da execução de uma ordem, uma nova 
 
 ### Orquestração por pregão B3
 
-O ciclo não depende mais do nome do dia da semana. O módulo `src/jobs/trading_calendar.py` identifica finais de semana, feriados nacionais e feriados recorrentes da B3. Em dia sem pregão, o workflow automático é encerrado com status `skipped`, sem atualizar sinais, ordens, posições ou patrimônio. Uma data manual sem pregão é recusada explicitamente.
+O ciclo não depende mais do nome do dia da semana. O módulo `src/jobs/trading_calendar.py` identifica finais de semana, feriados nacionais e feriados recorrentes da B3. Em dia sem pregão, o workflow automático é encerrado com status `skipped`, sem atualizar sinais, ordens, posições ou patrimônio. A geração semanal envia um único aviso de adiamento ao Telegram; os demais jobs apenas registram o `skipped`, evitando notificações redundantes. Uma data manual sem pregão é recusada explicitamente.
 
 A **GeracaoSinais** roda somente no primeiro pregão da semana: normalmente segunda-feira; se segunda for feriado, terça-feira; e assim por diante. A **NegociacaoOrdens** consulta exclusivamente o lote de sinais do pregão B3 imediatamente anterior. A **ReconciliacaoCarteira** consulta exclusivamente as ordens `FILLED` do pregão imediatamente anterior. Sem lote predecessor, ambos os jobs terminam como `skipped` e não alteram a carteira.
 

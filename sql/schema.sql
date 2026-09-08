@@ -103,6 +103,18 @@ CREATE INDEX IF NOT EXISTS idx_signals_signal_date ON signals (signal_date);
 CREATE INDEX IF NOT EXISTS idx_positions_as_of ON positions (as_of DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_job ON runs (job, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_email_recipients_active ON email_recipients (active);
+
+-- Diário operacional registrado pelo dashboard
+CREATE TABLE IF NOT EXISTS journal_entries (
+    id          bigserial PRIMARY KEY,
+    entry_date  date NOT NULL DEFAULT current_date,
+    ticker      text,
+    category    text NOT NULL DEFAULT 'Decisão',
+    note        text NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_journal_entries_date ON journal_entries (entry_date DESC, created_at DESC);
+ALTER TABLE journal_entries ENABLE ROW LEVEL SECURITY;
 -- QuantB3 — Schema PostgreSQL (Supabase)
 -- Versão: 1.0
 -- Executar no SQL Editor do Supabase

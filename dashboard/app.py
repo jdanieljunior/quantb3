@@ -457,6 +457,72 @@ def load_recent_runs(limit: int = 20) -> list:
         return []
 
 
+@st.cache_data(ttl=120)
+def load_operational_health() -> dict:
+    """Consolida datas, execuções e verificações de coerência da operação."""
+    try:
+        from src.db.repositories import (
+            get_equity_curve,
+            get_latest_price_date,
+            get_latest_signal_date,
+            get_orders,
+            get_runs,
+        )
+        from src.execution.ledger import rebuild_portfolio_from_orders
+
+        equity = get_equity_curve()
+        positions = load_current_positions()
+        filled = get_orders(status="FILLED")
+        pending = get_orders(status="PENDING")
+        alerts = []
+        latest_equity = equity.iloc[-1].to_dict() if not equity.empty else {}
+
+        if positions and not latest_equity:
+            alerts.append(("critical", "Há posições abertas, mas não há snapshot de patrimônio."))
+        if latest_equity and abs(
+            float(latest_equity.get("equity", 0))
+            - float(latest_equity.get("cash", 0))
+            - float(latest_equity.get("pos_value", 0))
+        ) > 0.02:
+            alerts.append(("critical", "O snapshot de patrimônio não fecha com caixa + posições."))
+
+        try:
+            ledger_cash, ledger_positions, warnings = rebuild_portfolio_from_orders(filled)
+            snapshot_qty = {p["ticker"]: int(p["qty"]) for p in positions}
+            ledger_qty = {ticker: int(pos["qty"]) for ticker, pos in ledger_positions.items()}
+            if snapshot_qty != ledger_qty:
+                alerts.append(("warning", "As quantidades do snapshot diferem do razão de ordens executadas."))
+            if ledger_cash < -0.02:
+                alerts.append(("critical", "O razão calculou caixa negativo; a reconciliação deve ser revisada."))
+            for warning in warnings:
+                alerts.append(("warning", str(warning)))
+        except Exception as exc:
+            alerts.append(("critical", f"Não foi possível validar o razão: {exc}"))
+
+        if pending:
+            dates = [o.get("signal_date") or o.get("exec_date") for o in pending]
+            oldest = min((item for item in dates if item), default=None)
+            if oldest and (date.today() - pd.Timestamp(oldest).date()).days > 3:
+                alerts.append(("warning", f"Há {len(pending)} ordem(ns) pendente(s) há mais de 3 dias."))
+
+        latest_price = get_latest_price_date()
+        latest_equity_date = latest_equity.get("date")
+        if positions and latest_price and latest_equity_date and latest_equity_date < latest_price:
+            alerts.append(("warning", "Os preços são mais recentes que o snapshot de patrimônio."))
+
+        return {
+            "latest_price": latest_price,
+            "latest_signal": get_latest_signal_date(),
+            "latest_equity_date": latest_equity_date,
+            "latest_equity": latest_equity,
+            "runs": get_runs(limit=40),
+            "pending": pending,
+            "alerts": alerts,
+        }
+    except Exception as exc:
+        return {"alerts": [("critical", f"Não foi possível carregar a saúde operacional: {exc}")]}
+
+
 @st.cache_data(ttl=60)
 def load_current_prices(tickers: list) -> dict:
     """Carrega preços atuais via yfinance."""
@@ -526,6 +592,16 @@ def format_currency(value: float) -> str:
 def format_pct(value: float) -> str:
     """Formata valor como percentual."""
     return f"{value:+.2f}%"
+
+
+def _format_date(value) -> str:
+    """Formata datas vindas do banco sem quebrar a interface em valores nulos."""
+    if not value:
+        return "—"
+    try:
+        return pd.Timestamp(value).strftime("%d/%m/%Y")
+    except Exception:
+        return str(value)
 
 
 # =============================================================================
@@ -686,6 +762,72 @@ def page_home():
             st.info("Nenhum sinal disponível ainda.")
 
 
+def page_operation():
+    """Exibe a saúde da operação, calendário e alertas de consistência."""
+    st.markdown('<div class="section-title">Monitoramento Operacional</div>', unsafe_allow_html=True)
+    health = load_operational_health()
+    alerts = health.get("alerts", [])
+
+    if alerts:
+        for severity, message in alerts:
+            if severity == "critical":
+                st.error(f"Inconsistência crítica: {message}")
+            else:
+                st.warning(message)
+    else:
+        st.success("Razão, snapshots e dados operacionais estão consistentes.")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        render_metric_card("Último preço", _format_date(health.get("latest_price")))
+    with col2:
+        render_metric_card("Último patrimônio", _format_date(health.get("latest_equity_date")))
+    with col3:
+        render_metric_card("Último sinal", _format_date(health.get("latest_signal")))
+    with col4:
+        render_metric_card("Ordens pendentes", str(len(health.get("pending", []))))
+
+    st.markdown("---")
+    col_calendar, col_runs = st.columns([1, 2])
+    with col_calendar:
+        st.markdown('<div class="section-title">Próximas Etapas</div>', unsafe_allow_html=True)
+        from src.jobs.trading_calendar import is_b3_trading_day, is_first_b3_trading_day_of_week, next_b3_trading_day
+
+        today = date.today()
+        next_day = today if is_b3_trading_day(today) else next_b3_trading_day(today)
+        signal_day = next_day
+        while not is_first_b3_trading_day_of_week(signal_day):
+            signal_day = next_b3_trading_day(signal_day)
+        execution_day = next_b3_trading_day(signal_day)
+        reconcile_day = next_b3_trading_day(execution_day)
+        st.caption("Agenda baseada em pregões B3, incluindo feriados.")
+        st.write(f"**Geração de sinais:** {_format_date(signal_day)}")
+        st.write(f"**Negociação de ordens:** {_format_date(execution_day)}")
+        st.write(f"**Reconciliação:** {_format_date(reconcile_day)}")
+        st.write("**Preços e patrimônio:** todo pregão, após o fechamento")
+
+    with col_runs:
+        st.markdown('<div class="section-title">Última Execução por Processo</div>', unsafe_allow_html=True)
+        labels = {
+            "monday": "GeracaoSinais",
+            "tuesday": "NegociacaoOrdens",
+            "wednesday": "ReconciliacaoCarteira",
+            "daily_prices": "PrecosDiarios",
+        }
+        latest_runs = {}
+        for run in health.get("runs", []):
+            latest_runs.setdefault(run.get("job", ""), run)
+        rows = []
+        for job, label in labels.items():
+            run = latest_runs.get(job, {})
+            rows.append({
+                "Processo": label,
+                "Início": _format_date(run.get("started_at")),
+                "Status": run.get("status", "sem registro"),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def page_portfolio():
     """Página de carteira atual."""
     st.markdown('<div class="sim-banner">⚠️  OPERAÇÃO SIMULADA — SEM CAPITAL REAL</div>', unsafe_allow_html=True)
@@ -771,6 +913,40 @@ def page_portfolio():
         )
     with col3:
         render_metric_card("Número de Posições", str(len(positions)))
+
+    st.markdown("---")
+    st.markdown('<div class="section-title">Risco e Concentração</div>', unsafe_allow_html=True)
+    equity_df = load_equity_curve()
+    latest_cash = float(equity_df.iloc[-1]["cash"]) if not equity_df.empty else 0.0
+    df["Peso (%)"] = df["Valor"] / total_value * 100 if total_value else 0.0
+    df["Risco até Stop"] = [
+        max((row["P. Atual"] - row["Stop"]) * row["Qtd"], 0.0)
+        for _, row in df.iterrows()
+    ]
+    max_weight = float(df["Peso (%)"].max()) if not df.empty else 0.0
+    stop_risk = float(df["Risco até Stop"].sum())
+    total_equity = total_value + latest_cash
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        render_metric_card("Maior concentração", format_pct(max_weight))
+    with col2:
+        render_metric_card("Risco até stops", format_currency(stop_risk))
+    with col3:
+        risk_pct = stop_risk / total_equity * 100 if total_equity else 0.0
+        render_metric_card("Risco / patrimônio", format_pct(risk_pct))
+    with col4:
+        cash_pct = latest_cash / total_equity * 100 if total_equity else 0.0
+        render_metric_card("Caixa", format_pct(cash_pct))
+
+    risk_table = df[["Ticker", "Valor", "Peso (%)", "Stop", "Risco até Stop"]].sort_values("Peso (%)", ascending=False)
+    st.dataframe(
+        risk_table.style.format({
+            "Valor": "R$ {:.2f}", "Peso (%)": "{:.2f}%", "Stop": "R$ {:.2f}",
+            "Risco até Stop": "R$ {:.2f}",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     # Gráfico de alocação
     if rows:
@@ -862,6 +1038,14 @@ def page_signals():
 
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
+    with st.expander("Como interpretar estes sinais"):
+        st.markdown(
+            "- **Score:** pontuação relativa do modelo para o horizonte de 10 pregões; compare ativos da mesma rodada.\n"
+            "- **Rank:** posição no ranking da rodada; os melhores ativos compõem a carteira-alvo.\n"
+            "- **BUY / SELL:** alteração necessária para atingir a carteira-alvo. **HOLD** mantém a posição; **OUT** não faz parte da carteira-alvo.\n"
+            "- **Ref., Stop e Take:** referência de preço e limites de gestão de risco usados na simulação."
+        )
+
     # Gráfico de scores
     st.markdown("---")
     st.markdown('<div class="section-title">Scores LGBM (Top 20)</div>', unsafe_allow_html=True)
@@ -919,6 +1103,13 @@ def page_orders():
     if side_filter != "Todos":
         orders = [o for o in orders if o.get("side") == side_filter]
 
+    all_orders = load_recent_orders(days=36500)
+    summary = {status: sum(o.get("status") == status for o in all_orders) for status in ("PENDING", "FILLED", "CANCELLED")}
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Pendentes", summary["PENDING"])
+    col2.metric("Executadas", summary["FILLED"])
+    col3.metric("Canceladas", summary["CANCELLED"])
+
     if not orders:
         st.info("Nenhuma ordem encontrada para os filtros selecionados.")
         return
@@ -926,6 +1117,7 @@ def page_orders():
     rows = []
     for o in orders:
         rows.append({
+            "Data Sinal": o.get("signal_date", ""),
             "Data Exec.": o.get("exec_date", ""),
             "Ticker": o.get("ticker", ""),
             "Lado": o.get("side", ""),
@@ -933,6 +1125,9 @@ def page_orders():
             "Preço": o.get("price") or 0,
             "Custo": o.get("cost") or 0,
             "Status": o.get("status", ""),
+            "Detalhe": o.get("note_id") or (
+                "Aguardando execução" if o.get("status") == "PENDING" else "—"
+            ),
         })
 
     df = pd.DataFrame(rows)
@@ -1153,6 +1348,37 @@ def page_equity():
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    benchmark = load_ticker_prices("BOVA11.SA")
+    if not benchmark.empty:
+        benchmark = benchmark[["date", "c"]].dropna().sort_values("date")
+        comparison = pd.merge_asof(
+            equity_df[["date", "equity"]].sort_values("date"),
+            benchmark.rename(columns={"c": "benchmark"}),
+            on="date",
+            direction="backward",
+        ).dropna()
+        if len(comparison) >= 2:
+            comparison["QuantB3 (%)"] = (comparison["equity"] / comparison["equity"].iloc[0] - 1) * 100
+            comparison["BOVA11 (%)"] = (comparison["benchmark"] / comparison["benchmark"].iloc[0] - 1) * 100
+            st.markdown('<div class="section-title">Comparativo com BOVA11</div>', unsafe_allow_html=True)
+            fig_benchmark = go.Figure()
+            fig_benchmark.add_trace(go.Scatter(
+                x=comparison["date"], y=comparison["QuantB3 (%)"], name="QuantB3",
+                line=dict(color="#3b82f6", width=2),
+            ))
+            fig_benchmark.add_trace(go.Scatter(
+                x=comparison["date"], y=comparison["BOVA11 (%)"], name="BOVA11",
+                line=dict(color="#f59e0b", width=2),
+            ))
+            fig_benchmark.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="Inter", color="#9ca3af", size=11),
+                xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b", ticksuffix="%"),
+                margin=dict(l=0, r=0, t=10, b=0), height=250,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            )
+            st.plotly_chart(fig_benchmark, use_container_width=True)
+
     # Gráfico de drawdown
     st.markdown('<div class="section-title">Drawdown</div>', unsafe_allow_html=True)
 
@@ -1226,6 +1452,52 @@ def page_runs():
 # =============================================================================
 # NAVEGAÇÃO E LAYOUT PRINCIPAL
 # =============================================================================
+
+def page_journal():
+    """Permite registrar o contexto humano das decisões da simulação."""
+    st.markdown('<div class="section-title">Diário da Carteira</div>', unsafe_allow_html=True)
+    st.caption("Registre aportes, decisões, observações de mercado e ajustes. O diário não altera a simulação.")
+
+    try:
+        from src.db.repositories import add_journal_entry, get_journal_entries
+        with st.form("journal_entry", clear_on_submit=True):
+            col_date, col_ticker, col_category = st.columns([1, 1, 1])
+            with col_date:
+                entry_date = st.date_input("Data", value=date.today())
+            with col_ticker:
+                ticker = st.text_input("Ticker (opcional)", placeholder="Ex.: VALE3.SA")
+            with col_category:
+                category = st.selectbox("Categoria", ["Decisão", "Aporte", "Mercado", "Ajuste", "Observação"])
+            note = st.text_area("Anotação", placeholder="Contexto, hipótese ou decisão tomada...")
+            submitted = st.form_submit_button("Salvar anotação", use_container_width=True)
+            if submitted:
+                if not note.strip():
+                    st.error("Escreva uma anotação antes de salvar.")
+                else:
+                    add_journal_entry(entry_date, ticker, category, note)
+                    st.cache_data.clear()
+                    st.success("Anotação salva no diário.")
+
+        entries = get_journal_entries()
+        if entries:
+            df = pd.DataFrame([
+                {
+                    "Data": _format_date(entry.get("entry_date")),
+                    "Categoria": entry.get("category", ""),
+                    "Ticker": entry.get("ticker") or "—",
+                    "Anotação": entry.get("note", ""),
+                }
+                for entry in entries
+            ])
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhuma anotação registrada ainda.")
+    except Exception as exc:
+        st.warning("O diário precisa da migração de banco antes do primeiro uso.")
+        with st.expander("Detalhes técnicos"):
+            st.code("sql/011_dashboard_journal.sql", language="text")
+            st.caption(str(exc))
+
 
 def page_settings():
     """Gerencia destinatários de e-mail sem expor credenciais do provedor."""
@@ -1306,7 +1578,7 @@ def main():
 
         page = st.radio(
             "Navegação",
-            options=["Resumo", "Carteira", "Sinais", "Ordens", "Histórico por Ativo", "Performance", "Jobs", "Configurações"],
+            options=["Resumo", "Operação", "Carteira", "Sinais", "Ordens", "Histórico por Ativo", "Performance", "Diário", "Jobs", "Configurações"],
             label_visibility="collapsed",
         )
 
@@ -1346,6 +1618,9 @@ def main():
     if page == "Resumo":
         st.title("Resumo Geral")
         page_home()
+    elif page == "Operação":
+        st.title("Operação")
+        page_operation()
     elif page == "Carteira":
         st.title("Carteira Atual")
         page_portfolio()
@@ -1361,6 +1636,9 @@ def main():
     elif page == "Performance":
         st.title("Análise de Performance")
         page_equity()
+    elif page == "Diário":
+        st.title("Diário da Carteira")
+        page_journal()
     elif page == "Jobs":
         st.title("Histórico de Jobs")
         page_runs()

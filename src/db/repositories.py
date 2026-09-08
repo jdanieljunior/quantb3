@@ -516,6 +516,36 @@ def set_email_recipient_active(recipient_id: int, active: bool) -> None:
 
 
 # =============================================================================
+# DIÁRIO OPERACIONAL
+# =============================================================================
+
+def add_journal_entry(entry_date: date, ticker: Optional[str], category: str, note: str) -> None:
+    """Salva uma anotação de decisão sem alterar ordens ou sinais."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO journal_entries (entry_date, ticker, category, note)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (entry_date, ticker.strip().upper() if ticker else None, category, note.strip()),
+        )
+
+
+def get_journal_entries(limit: int = 100) -> List[Dict[str, Any]]:
+    """Retorna as anotações mais recentes do diário."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM journal_entries
+            ORDER BY entry_date DESC, created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+# =============================================================================
 # RUNS (LOG DE JOBS)
 # =============================================================================
 

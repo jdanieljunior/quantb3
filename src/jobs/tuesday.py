@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime
 from typing import Dict
+from zoneinfo import ZoneInfo
 from src.data.collector import update_prices
 from src.db.repositories import (
     cancel_order,
@@ -34,6 +35,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _brazil_today() -> date:
+    """Data operacional no horário de Brasília, independente do runner UTC."""
+    return datetime.now(BRAZIL_TZ).date()
+
 
 def run_tuesday_job(
     exec_date: date | None = None,
@@ -52,7 +60,7 @@ def run_tuesday_job(
         Dict com resultado do job
     """
     if exec_date is None:
-        exec_date = date.today()
+        exec_date = _brazil_today()
 
     run_id = start_run("order_negotiation")
     log_lines = []
@@ -70,13 +78,11 @@ def run_tuesday_job(
             finish_run(run_id, "skipped", "\n".join(log_lines))
             return {"status": "skipped", "reason": "market_closed", "exec_date": exec_date}
 
-        # 1. Atualizar preços do dia
-        logger.info("1. Atualizando preços...")
-        n_rows = update_prices()
-        log_lines.append(f"Preços atualizados: {n_rows} registros")
-
-        # 2. Só negocia o lote criado no pregão imediatamente anterior.
-        logger.info("2. Carregando ordens pendentes do pregão anterior...")
+        # 1. Só negocia o lote criado no pregão imediatamente anterior.
+        # Esta verificação vem antes da coleta externa: em dias sem lote
+        # dependente (como a segunda-feira local), o job termina corretamente
+        # como ignorado e não depende do Yahoo Finance.
+        logger.info("1. Carregando ordens pendentes do pregão anterior...")
         signal_date = previous_b3_trading_day(exec_date)
         pending = get_pending_orders(signal_date)
 
@@ -89,6 +95,12 @@ def run_tuesday_job(
 
         logger.info(f"   {len(pending)} ordens pendentes")
         log_lines.append(f"Ordens pendentes: {len(pending)}")
+
+        # 2. Atualizar preços até a data operacional B3. Não use a data UTC do
+        # runner, pois após 21:00 UTC ela já pertence ao dia seguinte no Linux.
+        logger.info("2. Atualizando preços...")
+        n_rows = update_prices(as_of_date=exec_date)
+        log_lines.append(f"Preços atualizados: {n_rows} registros")
 
         # 3. Carregar OHLCV do dia de execução
         logger.info("3. Carregando OHLCV do dia...")

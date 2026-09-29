@@ -49,15 +49,16 @@ jobs:
         run: |
           python -c "
           import os
-          from datetime import date
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
           from src.jobs.tuesday import run_tuesday_job
 
           exec_date_str = os.environ.get('EXEC_DATE', '')
           if exec_date_str:
-              from datetime import datetime
               exec_date = datetime.strptime(exec_date_str, '%Y-%m-%d').date()
           else:
-              exec_date = date.today()
+              # O runner opera em UTC; a agenda e a B3 operam em São Paulo.
+              exec_date = datetime.now(ZoneInfo('America/Sao_Paulo')).date()
 
           result = run_tuesday_job(
               exec_date=exec_date,

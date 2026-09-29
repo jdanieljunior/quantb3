@@ -141,6 +141,7 @@ def update_prices(
     start_date: Optional[date] = None,
     force_full: bool = False,
     max_new_tickers: Optional[int] = None,
+    as_of_date: Optional[date] = None,
 ) -> int:
     """
     Atualiza preços no banco de dados.
@@ -150,6 +151,8 @@ def update_prices(
         start_date: Data inicial para todos os tickers (opcional)
         force_full: Se True, baixa desde 2022-01-01 independente do banco
         max_new_tickers: Limite de tickers sem histórico para esta execução
+        as_of_date: Data operacional cujo fechamento deve estar disponível.
+            Quando omitida, usa a data do ambiente atual.
 
     Returns:
         Número de registros inseridos/atualizados
@@ -170,7 +173,10 @@ def update_prices(
         logger.warning("Nenhum ticker disponível para atualização após aplicar a blacklist")
         return 0
 
-    end = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    # ``end`` no yfinance é exclusivo. A data operacional é recebida pelos
+    # jobs para não deixar um runner UTC avançar artificialmente o pregão B3.
+    reference_date = as_of_date or date.today()
+    end = (reference_date + timedelta(days=1)).strftime("%Y-%m-%d")
     latest_by_ticker = get_latest_price_dates(tickers)
     missing_tickers = [ticker for ticker in tickers if ticker not in latest_by_ticker]
     if max_new_tickers is None:

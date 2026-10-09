@@ -135,6 +135,11 @@ CREATE TABLE IF NOT EXISTS market_events (
     confirmed_by      text,
     confirmed_at      timestamptz,
     confirmation_note text,
+    source_event_id   text UNIQUE,
+    known_at          timestamptz,
+    available_from    date,
+    feature_from      date,
+    feature_to        date,
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT chk_market_event_class CHECK (event_class IN ('POINT', 'REGIME')),
@@ -148,12 +153,40 @@ CREATE TABLE IF NOT EXISTS market_events (
     ),
     CONSTRAINT chk_market_event_dates CHECK (
         valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from
+    ),
+    CONSTRAINT chk_market_event_feature_dates CHECK (
+        feature_to IS NULL OR feature_from IS NULL OR feature_to >= feature_from
     )
 );
 CREATE INDEX IF NOT EXISTS idx_market_events_status_published
     ON market_events (status, confirmed, published_at);
 CREATE INDEX IF NOT EXISTS idx_market_events_ticker_dates
     ON market_events (ticker, published_at, valid_to);
+
+-- Fonte bruta do IBRX Model Watch: nunca é lida pelo modelo diretamente.
+CREATE TABLE IF NOT EXISTS market_event_staging (
+    source_event_id          text PRIMARY KEY,
+    event_type               text NOT NULL,
+    ticker                   text,
+    alert_date               date,
+    official_disclosure_date date,
+    effective_from           date,
+    effective_to             date,
+    validation_status        text NOT NULL,
+    oos_enabled              boolean NOT NULL DEFAULT false,
+    source_confirmed         boolean NOT NULL DEFAULT false,
+    official_source_url      text,
+    secondary_source_url     text,
+    source_message_id        text,
+    event_stage              text,
+    validated_as_of          date,
+    notes                    text,
+    raw_payload              jsonb NOT NULL,
+    imported_at              timestamptz NOT NULL DEFAULT now(),
+    updated_at               timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_market_event_staging_validation
+    ON market_event_staging (validation_status, oos_enabled, source_confirmed);
 -- QuantB3 — Schema PostgreSQL (Supabase)
 -- Versão: 1.0
 -- Executar no SQL Editor do Supabase

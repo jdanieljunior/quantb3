@@ -5,6 +5,7 @@ QuantB3 — Repositórios (CRUD) para todas as tabelas
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -661,6 +662,70 @@ def set_market_event_validation(
         )
         if cur.rowcount != 1:
             raise ValueError(f"Evento {event_id} não encontrado")
+
+
+def upsert_market_event_staging(records: List[Dict[str, Any]]) -> int:
+    """Persiste a fonte bruta do Watch sem promovê-la a feature do modelo."""
+    if not records:
+        return 0
+    rows = []
+    for record in records:
+        rows.append({
+            "source_event_id": record["event_id"],
+            "event_type": record["event_type"],
+            "ticker": record.get("ticker") or None,
+            "alert_date": record.get("alert_date") or None,
+            "official_disclosure_date": record.get("official_disclosure_date") or None,
+            "effective_from": record.get("effective_from") or None,
+            "effective_to": record.get("effective_to") or None,
+            "validation_status": record["validation_status"],
+            "oos_enabled": record["oos_enabled"],
+            "source_confirmed": record["confirmed"],
+            "official_source_url": record.get("official_source_url") or None,
+            "secondary_source_url": record.get("secondary_source_url") or None,
+            "source_message_id": record.get("source_message_id") or None,
+            "event_stage": record.get("event_stage") or None,
+            "validated_as_of": record.get("validated_as_of") or None,
+            "notes": record.get("notes") or None,
+            "raw_payload": json.dumps(record, ensure_ascii=False),
+        })
+    with get_cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO market_event_staging (
+                source_event_id, event_type, ticker, alert_date,
+                official_disclosure_date, effective_from, effective_to,
+                validation_status, oos_enabled, source_confirmed,
+                official_source_url, secondary_source_url, source_message_id,
+                event_stage, validated_as_of, notes, raw_payload
+            ) VALUES (
+                %(source_event_id)s, %(event_type)s, %(ticker)s, %(alert_date)s,
+                %(official_disclosure_date)s, %(effective_from)s, %(effective_to)s,
+                %(validation_status)s, %(oos_enabled)s, %(source_confirmed)s,
+                %(official_source_url)s, %(secondary_source_url)s, %(source_message_id)s,
+                %(event_stage)s, %(validated_as_of)s, %(notes)s, %(raw_payload)s::jsonb
+            ) ON CONFLICT (source_event_id) DO UPDATE SET
+                event_type = EXCLUDED.event_type,
+                ticker = EXCLUDED.ticker,
+                alert_date = EXCLUDED.alert_date,
+                official_disclosure_date = EXCLUDED.official_disclosure_date,
+                effective_from = EXCLUDED.effective_from,
+                effective_to = EXCLUDED.effective_to,
+                validation_status = EXCLUDED.validation_status,
+                oos_enabled = EXCLUDED.oos_enabled,
+                source_confirmed = EXCLUDED.source_confirmed,
+                official_source_url = EXCLUDED.official_source_url,
+                secondary_source_url = EXCLUDED.secondary_source_url,
+                source_message_id = EXCLUDED.source_message_id,
+                event_stage = EXCLUDED.event_stage,
+                validated_as_of = EXCLUDED.validated_as_of,
+                notes = EXCLUDED.notes,
+                raw_payload = EXCLUDED.raw_payload,
+                updated_at = now()
+            """,
+            rows,
+        )
+    return len(rows)
 
 
 # =============================================================================

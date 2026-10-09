@@ -6,10 +6,13 @@ import unittest
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from config.settings import FEATURE_NAMES
 from src.events.features import EVENT_FEATURE_NAMES, build_market_event_features
 from src.features.engineering import build_features
+from src.events.staging import read_watch_staging
 
 
 class MarketEventFeaturesTest(unittest.TestCase):
@@ -70,6 +73,15 @@ class MarketEventFeaturesTest(unittest.TestCase):
         self.assertTrue((result.loc["2026-01-05":"2026-01-07"] == 1.0).all().all())
         self.assertEqual(result.loc["2026-01-08":].to_numpy().sum(), 0.0)
 
+    def test_promoted_event_without_available_from_fails_closed(self) -> None:
+        events = pd.DataFrame([{
+            "ticker": "PETR4.SA", "event_type": "CORPORATE_ACTION",
+            "event_class": "POINT", "published_at": "2026-01-03",
+            "available_from": None, "status": "CONFIRMED", "confirmed": True,
+        }])
+        features = build_market_event_features(self.dates, self.tickers, events)
+        self.assertEqual(float(features["evt_corporate_5d"].to_numpy().sum()), 0.0)
+
     def test_core_features_stay_unchanged_without_events(self) -> None:
         dates = pd.date_range("2025-01-01", periods=90, freq="B")
         prices = pd.DataFrame({"PETR4.SA": np.linspace(20, 30, len(dates))}, index=dates)
@@ -78,6 +90,23 @@ class MarketEventFeaturesTest(unittest.TestCase):
         features = build_features(prices, volumes, benchmark)
         self.assertEqual(list(features), FEATURE_NAMES)
         self.assertTrue(set(EVENT_FEATURE_NAMES).isdisjoint(features))
+
+
+class WatchStagingTest(unittest.TestCase):
+    def test_false_boolean_is_not_coerced_to_true(self) -> None:
+        header = (
+            "event_id,event_type,ticker,alert_date,official_disclosure_date,"
+            "effective_from,effective_to,validation_status,oos_enabled,confirmed,"
+            "official_source_url,secondary_source_url,source_message_id,event_stage,"
+            "validated_as_of,notes\n"
+        )
+        row = "evt-1,OPA,PETR4.SA,,,,,PENDENTE,false,false,,,,,,\n"
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "watch.csv"
+            path.write_text(header + row, encoding="utf-8-sig")
+            records = read_watch_staging(path)
+        self.assertFalse(records[0]["oos_enabled"])
+        self.assertFalse(records[0]["confirmed"])
 
 
 if __name__ == "__main__":

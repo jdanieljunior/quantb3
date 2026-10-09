@@ -83,20 +83,35 @@ def build_market_event_features(
             continue
         event_type = str(event.get("event_type", "")).upper()
         event_class = str(event.get("event_class", "POINT")).upper()
-        valid_from = _event_date(event.get("valid_from"))
-        if valid_from is None:
-            valid_from = published_at
+        # Nas tabelas atuais, ``available_from`` é obrigatório para eventos
+        # promovidos: é a data causal, e não uma suposição a partir do alerta.
+        if "available_from" in events.columns:
+            available_from = _event_date(event.get("available_from"))
+            if available_from is None:
+                continue
+        else:  # Compatibilidade apenas com fixtures/legado sem a coluna.
+            available_from = published_at
+        feature_from = _event_date(event.get("feature_from"))
+        if feature_from is None:
+            feature_from = available_from
         # Disponibilidade informacional nunca pode anteceder a divulgação.
-        active_from = max(published_at, valid_from)
+        active_from = max(published_at, available_from, feature_from)
+        feature_to = _event_date(event.get("feature_to"))
         valid_to = _event_date(event.get("valid_to"))
 
         if event_class == "REGIME" and event_type in _REGIME_FEATURES:
             feature_name = _REGIME_FEATURES[event_type]
-            active_to = valid_to if valid_to is not None else dates.max()
+            if "feature_to" in events.columns and feature_to is None:
+                # Regime sem término causal não é promovível; evita duração
+                # infinita escondida em uma célula vazia.
+                continue
+            active_to = feature_to if feature_to is not None else (valid_to if valid_to is not None else dates.max())
         elif event_type in _POINT_WINDOWS:
             feature_name, window_days = _POINT_WINDOWS[event_type]
             active_to = active_from + timedelta(days=window_days)
-            if valid_to is not None:
+            if feature_to is not None:
+                active_to = min(active_to, feature_to)
+            elif valid_to is not None:
                 active_to = min(active_to, valid_to)
         else:
             continue

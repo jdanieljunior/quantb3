@@ -122,14 +122,16 @@ A aplicação é destinada exclusivamente a simulação.
 
 ### IBRX Model Watch e eventos de mercado
 
-O IBRX Model Watch é uma camada de dados estruturados para enriquecer o modelo, e não um gerador de ordens. A tabela `market_events` registra ticker opcional, tipo e classe do evento, datas de divulgação e efetivação, período de vigência, fonte, referência, status e confirmação. A migração é `sql/012_market_events.sql`.
+O IBRX Model Watch é uma camada de dados estruturados para enriquecer o modelo, e não um gerador de ordens. A tabela `market_events` registra ticker opcional, tipo e classe do evento, datas de divulgação e efetivação, período de vigência, fonte, referência, status e confirmação. As migrações são `sql/012_market_events.sql` e `sql/013_market_event_staging_point_in_time.sql`.
 
 | Classe | Tipos inicialmente suportados | Feature | Regra temporal |
 |---|---|---|---|
 | Pontual | `CORPORATE_ACTION`, `IBRX_COMPOSITION`, `B3_REGULATORY` | flags de 5, 5 e 10 dias | inicia na maior data entre divulgação e vigência; nunca antes da divulgação |
 | Regime | `HIGH_VOLATILITY_REGIME`, `RISK_OFF_REGIME` | flags de regime | ativa até `valid_to`, ou até o último dado disponível se não houver término |
 
-O dashboard **Eventos** aceita apenas a ingestão estruturada e sempre grava como `PENDING_VALIDATION`. Para um registro tornar-se `CONFIRMED`, sua fonte deve ser revisada em fonte confiável (por exemplo, B3, CVM ou RI da companhia), com responsável e nota de confirmação. Registros pendentes ou rejeitados são ignorados pela engenharia de features.
+O CSV bruto do Watch é importado em `market_event_staging`, preservando `event_id`, fontes, evidências, notas e o payload original. A área de staging jamais é lida pelo modelo. O importador `scripts/import_market_event_staging.py` exige UTF-8 com BOM e converte booleanos textuais somente por comparação explícita; portanto, a string `"false"` não se torna verdadeira acidentalmente.
+
+O dashboard **Eventos** aceita apenas a ingestão estruturada e sempre grava como `PENDING_VALIDATION`. Para um registro tornar-se `CONFIRMED`, sua fonte deve ser revisada em fonte confiável (por exemplo, B3, CVM ou RI da companhia), com responsável e nota de confirmação. Além disso, a promoção exige `available_from` e, para regimes, `feature_to` explícito. Registros pendentes, rejeitados ou sem essa disponibilidade causal são ignorados pela engenharia de features.
 
 As features do Watch permanecem desligadas por padrão (`ENABLE_MARKET_EVENT_FEATURES=false`). Isto mantém as 18 features e todos os parâmetros da estratégia v2.1 inalterados. A habilitação requer uma base histórica confirmada e o relatório `compare_base_vs_events_oos`, que executa os dois modelos em walk-forward e o mesmo motor de backtest no período temporal fora da amostra. Sem eventos históricos confirmados, não há evidência para promover o enriquecimento à produção.
 

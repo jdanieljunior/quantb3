@@ -1,7 +1,7 @@
 # Memoriais Descritivos — QuantB3
 
-**Versão documental:** 1.4
-**Atualizado em:** 08/09/2026
+**Versão documental:** 1.5
+**Atualizado em:** 09/10/2026
 **Escopo:** operação simulada (paper trading), sem capital real.
 
 Este documento consolida os memoriais operacional, do modelo, de engenharia e do simulador. Deve ser atualizado quando houver mudanças em modelo, coleta, workflows ou regras de execução.
@@ -119,6 +119,19 @@ A página **Histórico por Ativo** restringe o seletor aos tickers que já possu
 O cursor de cada venda apresenta quantidade, preço, custo, resultado financeiro e percentual realizado. O percentual é calculado contra o preço médio da posição imediatamente antes daquela venda, incluindo os custos registrados no razão.
 
 A aplicação é destinada exclusivamente a simulação.
+
+### IBRX Model Watch e eventos de mercado
+
+O IBRX Model Watch é uma camada de dados estruturados para enriquecer o modelo, e não um gerador de ordens. A tabela `market_events` registra ticker opcional, tipo e classe do evento, datas de divulgação e efetivação, período de vigência, fonte, referência, status e confirmação. A migração é `sql/012_market_events.sql`.
+
+| Classe | Tipos inicialmente suportados | Feature | Regra temporal |
+|---|---|---|---|
+| Pontual | `CORPORATE_ACTION`, `IBRX_COMPOSITION`, `B3_REGULATORY` | flags de 5, 5 e 10 dias | inicia na maior data entre divulgação e vigência; nunca antes da divulgação |
+| Regime | `HIGH_VOLATILITY_REGIME`, `RISK_OFF_REGIME` | flags de regime | ativa até `valid_to`, ou até o último dado disponível se não houver término |
+
+O dashboard **Eventos** aceita apenas a ingestão estruturada e sempre grava como `PENDING_VALIDATION`. Para um registro tornar-se `CONFIRMED`, sua fonte deve ser revisada em fonte confiável (por exemplo, B3, CVM ou RI da companhia), com responsável e nota de confirmação. Registros pendentes ou rejeitados são ignorados pela engenharia de features.
+
+As features do Watch permanecem desligadas por padrão (`ENABLE_MARKET_EVENT_FEATURES=false`). Isto mantém as 18 features e todos os parâmetros da estratégia v2.1 inalterados. A habilitação requer uma base histórica confirmada e o relatório `compare_base_vs_events_oos`, que executa os dois modelos em walk-forward e o mesmo motor de backtest no período temporal fora da amostra. Sem eventos históricos confirmados, não há evidência para promover o enriquecimento à produção.
 
 ## 4. Memorial do Simulador OHLCV
 

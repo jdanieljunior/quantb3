@@ -546,6 +546,124 @@ def get_journal_entries(limit: int = 100) -> List[Dict[str, Any]]:
 
 
 # =============================================================================
+# IBRX MODEL WATCH — EVENTOS E REGIMES
+# =============================================================================
+
+def add_market_event(
+    *,
+    ticker: Optional[str],
+    event_type: str,
+    event_class: str,
+    published_at: date,
+    effective_date: Optional[date],
+    valid_from: Optional[date],
+    valid_to: Optional[date],
+    source_name: str,
+    source_url: Optional[str],
+    source_reference: Optional[str],
+    summary: Optional[str],
+) -> int:
+    """Registra um alerta estruturado para validação humana posterior.
+
+    A interface não pode criar eventos confirmados. Isso impede que um alerta
+    não verificado entre silenciosamente no treinamento ou em sinais futuros.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO market_events (
+                ticker, event_type, event_class, published_at, effective_date,
+                valid_from, valid_to, source_name, source_url, source_reference,
+                summary, status, confirmed
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'PENDING_VALIDATION', false
+            )
+            RETURNING id
+            """,
+            (
+                ticker.strip().upper() if ticker else None,
+                event_type.strip().upper(),
+                event_class.strip().upper(),
+                published_at, effective_date, valid_from, valid_to,
+                source_name.strip(), source_url.strip() if source_url else None,
+                source_reference.strip() if source_reference else None,
+                summary.strip() if summary else None,
+            ),
+        )
+        row = cur.fetchone()
+        return int(row["id"])
+
+
+def get_market_events(limit: int = 250) -> List[Dict[str, Any]]:
+    """Retorna alertas do Watch, inclusive os pendentes de validação."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM market_events
+            ORDER BY published_at DESC, created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_confirmed_market_events(as_of_date: Optional[date] = None) -> pd.DataFrame:
+    """Eventos confirmados e já públicos até ``as_of_date``.
+
+    O filtro de divulgação é uma defesa complementar contra look-ahead; a
+    engenharia de features repete a mesma garantia por linha temporal.
+    """
+    conditions = ["status = 'CONFIRMED'", "confirmed = true"]
+    params: List[Any] = []
+    if as_of_date is not None:
+        conditions.append("published_at <= %s")
+        params.append(as_of_date)
+    where = " AND ".join(conditions)
+    with get_cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM market_events WHERE {where} ORDER BY published_at, id",
+            params,
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    return pd.DataFrame(rows)
+
+
+def set_market_event_validation(
+    event_id: int,
+    *,
+    approved: bool,
+    validated_by: str,
+    note: Optional[str] = None,
+) -> None:
+    """Registra a decisão de validação após conferência em fonte confiável.
+
+    Esta operação é deliberadamente separada da ingestão. Quem cadastra um
+    alerta não o promove a feature de produção sem uma confirmação explícita.
+    """
+    if not validated_by.strip():
+        raise ValueError("Informe quem validou o evento")
+    status = "CONFIRMED" if approved else "REJECTED"
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE market_events
+            SET status = %s,
+                confirmed = %s,
+                confirmed_by = %s,
+                confirmed_at = CASE WHEN %s THEN now() ELSE NULL END,
+                confirmation_note = %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (status, approved, validated_by.strip(), approved, note.strip() if note else None, event_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"Evento {event_id} não encontrado")
+
+
+# =============================================================================
 # RUNS (LOG DE JOBS)
 # =============================================================================
 

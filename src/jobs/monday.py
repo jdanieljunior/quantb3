@@ -12,11 +12,12 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from config.settings import N_POSITIONS
+from config.settings import ENABLE_MARKET_EVENT_FEATURES, N_POSITIONS
 from src.data.collector import update_prices
 from src.db.repositories import (
     finish_run,
     get_prices,
+    get_confirmed_market_events,
     log_notification,
     replace_weekly_plan,
     start_run,
@@ -158,7 +159,19 @@ def run_monday_job(
                 "Execute o job após o fechamento ou informe uma data de pregão."
             )
 
-        model = QuantB3Model(prices, volumes, bova)
+        market_events = None
+        if ENABLE_MARKET_EVENT_FEATURES:
+            market_events = get_confirmed_market_events(signal_date)
+            logger.info("   IBRX Model Watch: %s eventos confirmados disponíveis", len(market_events))
+            log_lines.append(f"Eventos Watch confirmados até o sinal: {len(market_events)}")
+
+        model = QuantB3Model(
+            prices,
+            volumes,
+            bova,
+            market_events=market_events,
+            use_market_events=ENABLE_MARKET_EVENT_FEATURES,
+        )
 
         # Carteira atual derivada do razão (não de snapshots potencialmente defasados).
         from src.db.repositories import get_orders

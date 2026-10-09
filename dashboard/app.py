@@ -1500,6 +1500,89 @@ def page_journal():
             st.caption(str(exc))
 
 
+def page_market_events():
+    """Entrada estruturada de alertas do IBRX Model Watch.
+
+    O dashboard aceita o registro, mas não confirma fatos automaticamente e
+    não transforma notícias em ordens. A confirmação requer uma fonte externa
+    revisada antes de o evento ser elegível como feature.
+    """
+    st.markdown('<div class="section-title">IBRX Model Watch</div>', unsafe_allow_html=True)
+    st.caption(
+        "Cadastre alertas estruturados para validação. Somente eventos confirmados, "
+        "já divulgados e com a feature habilitada podem chegar ao treinamento."
+    )
+
+    try:
+        from src.db.repositories import add_market_event, get_market_events
+
+        with st.form("market_event", clear_on_submit=True):
+            left, right = st.columns(2)
+            with left:
+                event_class = st.selectbox("Classe", ["POINT", "REGIME"], format_func=lambda x: "Pontual" if x == "POINT" else "Regime persistente")
+                event_type = st.selectbox(
+                    "Tipo do evento",
+                    [
+                        "CORPORATE_ACTION",
+                        "IBRX_COMPOSITION",
+                        "B3_REGULATORY",
+                        "HIGH_VOLATILITY_REGIME",
+                        "RISK_OFF_REGIME",
+                    ],
+                )
+                ticker = st.text_input("Ticker (vazio = mercado inteiro)", placeholder="Ex.: VALE3.SA")
+                published_at = st.date_input("Data de divulgação", value=date.today())
+            with right:
+                effective_date = st.date_input("Data efetiva", value=date.today())
+                valid_from = st.date_input("Início da vigência", value=date.today())
+                valid_to = st.date_input("Fim da vigência (regime)", value=None)
+                source_name = st.text_input("Fonte confiável", placeholder="Ex.: B3, CVM, RI da companhia")
+            source_url = st.text_input("URL da fonte", placeholder="https://...")
+            source_reference = st.text_input("Referência da fonte (opcional)", placeholder="Comunicado, ofício, fato relevante...")
+            summary = st.text_area("Resumo factual", placeholder="Descreva o fato verificável, sem recomendação de ordem.")
+            submitted = st.form_submit_button("Registrar para validação", use_container_width=True)
+
+            if submitted:
+                if not source_name.strip() or not (source_url.strip() or source_reference.strip()):
+                    st.error("Informe a fonte e ao menos uma URL ou referência verificável.")
+                elif not summary.strip():
+                    st.error("Inclua um resumo factual para a etapa de validação.")
+                else:
+                    event_id = add_market_event(
+                        ticker=ticker,
+                        event_type=event_type,
+                        event_class=event_class,
+                        published_at=published_at,
+                        effective_date=effective_date,
+                        valid_from=valid_from,
+                        valid_to=valid_to,
+                        source_name=source_name,
+                        source_url=source_url,
+                        source_reference=source_reference,
+                        summary=summary,
+                    )
+                    st.cache_data.clear()
+                    st.success(f"Alerta #{event_id} registrado como PENDING_VALIDATION.")
+
+        events = get_market_events()
+        if events:
+            event_df = pd.DataFrame(events)
+            columns = [
+                "id", "ticker", "event_type", "event_class", "published_at",
+                "effective_date", "valid_from", "valid_to", "source_name", "status",
+                "confirmed", "summary",
+            ]
+            available = [column for column in columns if column in event_df.columns]
+            st.dataframe(event_df[available], use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum alerta cadastrado. Registros pendentes não são usados pelo modelo.")
+    except Exception as exc:
+        st.warning("A tela de eventos precisa da migração de banco antes do primeiro uso.")
+        with st.expander("Detalhes técnicos"):
+            st.code("sql/012_market_events.sql", language="text")
+            st.caption(str(exc))
+
+
 def page_settings():
     """Gerencia destinatários de e-mail sem expor credenciais do provedor."""
     from src.db.repositories import get_email_recipients, set_email_recipient_active, upsert_email_recipient
@@ -1579,7 +1662,7 @@ def main():
 
         page = st.radio(
             "Navegação",
-            options=["Resumo", "Operação", "Carteira", "Sinais", "Ordens", "Histórico por Ativo", "Performance", "Diário", "Jobs", "Configurações"],
+            options=["Resumo", "Operação", "Carteira", "Sinais", "Ordens", "Histórico por Ativo", "Performance", "Diário", "Eventos", "Jobs", "Configurações"],
             label_visibility="collapsed",
         )
 
@@ -1640,6 +1723,9 @@ def main():
     elif page == "Diário":
         st.title("Diário da Carteira")
         page_journal()
+    elif page == "Eventos":
+        st.title("IBRX Model Watch")
+        page_market_events()
     elif page == "Jobs":
         st.title("Histórico de Jobs")
         page_runs()

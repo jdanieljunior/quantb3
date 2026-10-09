@@ -17,6 +17,7 @@ except ImportError as e:
     raise ImportError("Instale lightgbm: pip install lightgbm") from e
 
 from config.settings import (
+    ENABLE_MARKET_EVENT_FEATURES,
     FEATURE_NAMES,
     FORWARD_DAYS,
     LGBM_PARAMS,
@@ -25,6 +26,7 @@ from config.settings import (
     TRAIN_MIN_DAYS,
     N_POSITIONS,
 )
+from src.events.features import EVENT_FEATURE_NAMES
 from src.features.engineering import build_features, build_panel, get_latest_features
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,8 @@ class QuantB3Model:
         sticky_buffer: int = STICKY_BUFFER,
         train_min_days: int = TRAIN_MIN_DAYS,
         lgbm_params: Optional[dict] = None,
+        market_events: Optional[pd.DataFrame] = None,
+        use_market_events: bool = ENABLE_MARKET_EVENT_FEATURES,
     ):
         self.prices = prices
         self.volumes = volumes
@@ -57,11 +61,21 @@ class QuantB3Model:
         self.sticky_buffer = sticky_buffer
         self.train_min_days = train_min_days
         self.lgbm_params = lgbm_params or LGBM_PARAMS.copy()
+        self.use_market_events = use_market_events
+        self.market_events = market_events.copy() if market_events is not None else None
+        self.feature_names = FEATURE_NAMES + (EVENT_FEATURE_NAMES if use_market_events else [])
 
-        self.features = build_features(prices, volumes, self.benchmark)
+        self.features = build_features(
+            prices,
+            volumes,
+            self.benchmark,
+            self.market_events if use_market_events else None,
+        )
         self.vol_ma21 = volumes.rolling(21).mean()
         self.fwd_10 = prices.pct_change(FORWARD_DAYS).shift(-FORWARD_DAYS)
-        self.panel = build_panel(self.features, self.fwd_10, self.vol_ma21)
+        self.panel = build_panel(
+            self.features, self.fwd_10, self.vol_ma21, self.feature_names
+        )
         self.vol_threshold = float(
             self.panel["vol_ma21"].quantile(self.liq_percentile)
         )
@@ -112,10 +126,10 @@ class QuantB3Model:
 
             try:
                 model = self._train_lgbm(
-                    train[FEATURE_NAMES].values,
+                    train[self.feature_names].values,
                     train["fwd_10"].values,
                 )
-                scores = model.predict(test_liq[FEATURE_NAMES].values)
+                scores = model.predict(test_liq[self.feature_names].values)
                 score_history[mon] = pd.Series(
                     scores, index=test_liq["ticker"].values
                 )
@@ -189,6 +203,8 @@ class QuantB3Model:
             self.benchmark,
             date,
             self.vol_threshold,
+            self.market_events if self.use_market_events else None,
+            self.feature_names,
         )
         if len(test_liq) < self.n_positions:
             test_liq = get_latest_features(
@@ -196,15 +212,17 @@ class QuantB3Model:
                 self.volumes,
                 self.benchmark,
                 date,
+                market_events=self.market_events if self.use_market_events else None,
+                feature_names=self.feature_names,
             )
         if test_liq.empty:
             return pd.Series(dtype=float), []
 
         model = self._train_lgbm(
-            train[FEATURE_NAMES].values,
+            train[self.feature_names].values,
             train["fwd_10"].values,
         )
-        scores = model.predict(test_liq[FEATURE_NAMES].values)
+        scores = model.predict(test_liq[self.feature_names].values)
         score_series = pd.Series(
             scores, index=test_liq["ticker"].values
         ).sort_values(ascending=False)

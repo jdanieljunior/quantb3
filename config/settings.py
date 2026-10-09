@@ -6,7 +6,11 @@ NUNCA alterar sem atualizar o memorial correspondente.
 """
 
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # Permite testes puros quando as variáveis já vêm do ambiente.
+    def load_dotenv() -> bool:
+        return False
 
 load_dotenv()
 
@@ -45,6 +49,10 @@ FEATURE_NAMES = [
     "excesso_10", "excesso_21",
     "rsi_14", "rev_5",
 ]
+
+# Features do IBRX Model Watch. Permanecem desativadas até que exista uma base
+# histórica validada e a comparação temporal fora da amostra seja aprovada.
+ENABLE_MARKET_EVENT_FEATURES = os.getenv("ENABLE_MARKET_EVENT_FEATURES", "false").lower() == "true"
 
 # =============================================================================
 # GESTÃO DE RISCO (Memorial v2.1 — CONGELADO)

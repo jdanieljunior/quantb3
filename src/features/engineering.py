@@ -1,30 +1,33 @@
 """
 QuantB3 — Engenharia de Features
-18 features oficiais do modelo LightGBM v2.1
+18 features oficiais do modelo LightGBM v2.1, com extensão opcional de eventos.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
 
 from config.settings import FEATURE_NAMES
+from src.events.features import build_market_event_features
 
 
 def build_features(
     prices: pd.DataFrame,
     volumes: pd.DataFrame,
     benchmark: pd.Series,
+    market_events: Optional[pd.DataFrame] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Constrói as 18 features oficiais do modelo.
+    Constrói as 18 features oficiais e, quando fornecidos, eventos estruturados.
 
     Args:
         prices: DataFrame de fechamentos (index=Data, columns=tickers)
         volumes: DataFrame de volumes (index=Data, columns=tickers)
         benchmark: Series de fechamentos do BOVA11 (index=Data)
+        market_events: eventos validados; nunca obrigatórios para o modelo-base.
 
     Returns:
         Dict com nome da feature -> DataFrame (mesmo shape que prices)
@@ -66,6 +69,9 @@ def build_features(
     feat["rsi_14"] = 100 - (100 / (1 + rs))
     feat["rev_5"] = -feat["mom_5"]
 
+    if market_events is not None:
+        feat.update(build_market_event_features(prices.index, prices.columns, market_events))
+
     return feat
 
 
@@ -73,6 +79,7 @@ def build_panel(
     features: Dict[str, pd.DataFrame],
     fwd_ret: pd.DataFrame,
     vol_ma21: Optional[pd.DataFrame] = None,
+    feature_names: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Empilha features + target em formato longo (Data, ticker, features..., fwd_10).
@@ -96,10 +103,11 @@ def build_panel(
     if vol_ma21 is not None:
         panel["vol_ma21"] = vol_ma21.stack()
 
-    subset = FEATURE_NAMES + ["fwd_10"]
+    feature_names = feature_names or FEATURE_NAMES
+    subset = feature_names + ["fwd_10"]
     panel = panel.dropna(subset=subset, how="any").reset_index()
 
-    cols = ["Data", "ticker"] + FEATURE_NAMES + ["fwd_10"]
+    cols = ["Data", "ticker"] + feature_names + ["fwd_10"]
     if vol_ma21 is not None:
         cols.append("vol_ma21")
 
@@ -113,6 +121,8 @@ def get_latest_features(
     benchmark: pd.Series,
     signal_date: pd.Timestamp,
     vol_threshold: Optional[float] = None,
+    market_events: Optional[pd.DataFrame] = None,
+    feature_names: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Calcula as features para uma data específica (uso em produção).
@@ -128,7 +138,8 @@ def get_latest_features(
     Returns:
         DataFrame com features para o dia, filtrado por liquidez
     """
-    features = build_features(prices, volumes, benchmark)
+    feature_names = feature_names or FEATURE_NAMES
+    features = build_features(prices, volumes, benchmark, market_events)
     vol_ma21 = volumes.rolling(21).mean()
 
     # Pega apenas a data do sinal
@@ -159,6 +170,6 @@ def get_latest_features(
             feat_df = feat_df[feat_df["vol_ma21"] >= vol_threshold]
 
     # Remove linhas com features faltando
-    feat_df = feat_df.dropna(subset=FEATURE_NAMES)
+    feat_df = feat_df.dropna(subset=feature_names)
 
     return feat_df

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,33 @@ def _bool(value: str, field: str, event_id: str) -> bool:
     return normalized == "true"
 
 
+def _parse_rows(reader: csv.DictReader) -> list[dict[str, Any]]:
+    """Valida linhas brutas sem inferir datas, booleanos ou vigência."""
+    headers = set(reader.fieldnames or [])
+    missing = REQUIRED_COLUMNS - headers
+    if missing:
+        raise ValueError(f"CSV sem colunas obrigatórias: {', '.join(sorted(missing))}")
+
+    records = []
+    seen: set[str] = set()
+    for row in reader:
+        event_id = (row.get("event_id") or "").strip()
+        if not event_id:
+            raise ValueError("CSV contém event_id vazio")
+        if event_id in seen:
+            raise ValueError(f"CSV contém event_id duplicado: {event_id}")
+        seen.add(event_id)
+        if not (row.get("event_type") or "").strip():
+            raise ValueError(f"{event_id}: event_type é obrigatório")
+
+        normalized = {key: (value.strip() if value else None) for key, value in row.items()}
+        normalized["event_id"] = event_id
+        normalized["oos_enabled"] = _bool(row.get("oos_enabled", ""), "oos_enabled", event_id)
+        normalized["confirmed"] = _bool(row.get("confirmed", ""), "confirmed", event_id)
+        records.append(normalized)
+    return records
+
+
 def read_watch_staging(path: str | Path) -> list[dict[str, Any]]:
     """Lê CSV UTF-8-BOM sem inferir datas, booleanos ou vigência.
 
@@ -30,27 +58,9 @@ def read_watch_staging(path: str | Path) -> list[dict[str, Any]]:
     ``market_events`` acontece em fluxo separado, após validação documental.
     """
     with Path(path).open(encoding="utf-8-sig", newline="") as file:
-        reader = csv.DictReader(file)
-        headers = set(reader.fieldnames or [])
-        missing = REQUIRED_COLUMNS - headers
-        if missing:
-            raise ValueError(f"CSV sem colunas obrigatórias: {', '.join(sorted(missing))}")
+        return _parse_rows(csv.DictReader(file))
 
-        records = []
-        seen: set[str] = set()
-        for row in reader:
-            event_id = (row.get("event_id") or "").strip()
-            if not event_id:
-                raise ValueError("CSV contém event_id vazio")
-            if event_id in seen:
-                raise ValueError(f"CSV contém event_id duplicado: {event_id}")
-            seen.add(event_id)
-            if not (row.get("event_type") or "").strip():
-                raise ValueError(f"{event_id}: event_type é obrigatório")
 
-            normalized = {key: (value.strip() if value else None) for key, value in row.items()}
-            normalized["event_id"] = event_id
-            normalized["oos_enabled"] = _bool(row.get("oos_enabled", ""), "oos_enabled", event_id)
-            normalized["confirmed"] = _bool(row.get("confirmed", ""), "confirmed", event_id)
-            records.append(normalized)
-    return records
+def read_watch_staging_bytes(content: bytes) -> list[dict[str, Any]]:
+    """Variante para upload do dashboard, com a mesma validação fechada."""
+    return _parse_rows(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))

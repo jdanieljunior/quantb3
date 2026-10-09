@@ -1514,7 +1514,29 @@ def page_market_events():
     )
 
     try:
-        from src.db.repositories import add_market_event, get_market_events
+        from src.db.repositories import add_market_event, get_market_events, upsert_market_event_staging
+        from src.events.staging import read_watch_staging_bytes
+
+        with st.expander("Importar CSV do IBRX Model Watch para auditoria"):
+            st.caption("A carga vai apenas para market_event_staging; não habilita features, sinais ou ordens.")
+            uploaded = st.file_uploader("CSV UTF-8", type=["csv"], key="watch_csv_upload")
+            if uploaded is not None:
+                try:
+                    staging_records = read_watch_staging_bytes(uploaded.getvalue())
+                    preview = pd.DataFrame(staging_records)
+                    st.success(f"Arquivo válido: {len(staging_records)} eventos bloqueados para validação.")
+                    st.dataframe(
+                        preview[["event_id", "event_type", "ticker", "validation_status", "oos_enabled", "confirmed"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    if st.button("Importar somente para auditoria", key="import_watch_staging", use_container_width=True):
+                        count = upsert_market_event_staging(staging_records)
+                        st.success(f"{count} registros importados para staging. Nenhum foi promovido ao modelo.")
+                except UnicodeDecodeError:
+                    st.error("O arquivo deve estar em UTF-8 ou UTF-8 com BOM.")
+                except Exception as exc:
+                    st.error(f"CSV inválido ou não importável: {exc}")
 
         with st.form("market_event", clear_on_submit=True):
             left, right = st.columns(2)

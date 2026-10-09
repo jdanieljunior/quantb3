@@ -1518,13 +1518,20 @@ def page_market_events():
         try:
             from src.db.repositories import upsert_market_event_staging
         except ImportError as exc:
-            # Uma atualização parcial do Streamlit pode recarregar esta tela
-            # antes do módulo de repositórios. Evita uma mensagem enganosa de
-            # migração e orienta o operador a reiniciar o processo.
-            st.info("Atualização do aplicativo em andamento. Recarregue a página em alguns instantes.")
-            with st.expander("Detalhe técnico"):
-                st.caption(str(exc))
-            return
+            # O hot reload do Streamlit pode manter um módulo auxiliar antigo
+            # em memória enquanto esta página já foi atualizada. Recarrega-o
+            # uma vez antes de concluir que o deploy ainda não terminou.
+            import importlib
+            import src.db.repositories as repositories
+            repositories = importlib.reload(repositories)
+            upsert_market_event_staging = getattr(
+                repositories, "upsert_market_event_staging", None
+            )
+            if upsert_market_event_staging is None:
+                st.info("Atualização do aplicativo em andamento. Recarregue a página em alguns instantes.")
+                with st.expander("Detalhe técnico"):
+                    st.caption(str(exc))
+                return
         from src.events.staging import read_watch_staging_bytes
 
         with st.expander("Importar CSV do IBRX Model Watch para auditoria"):
